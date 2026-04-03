@@ -1,0 +1,380 @@
+import 'package:flutter/material.dart';
+
+import '../data/mock_student_records.dart';
+import '../domain/student_record.dart';
+import 'student_detail_screen.dart';
+
+class StudentsScreen extends StatefulWidget {
+  const StudentsScreen({super.key});
+
+  @override
+  State<StudentsScreen> createState() => _StudentsScreenState();
+}
+
+class _StudentsScreenState extends State<StudentsScreen> {
+  String _selectedClass = 'All Classes';
+  String _selectedSection = 'All Sections';
+
+  List<StudentRecord> get _filteredStudents {
+    return mockStudentRecords.where((student) {
+      final matchesClass =
+          _selectedClass == 'All Classes' ||
+          student.className == _selectedClass;
+      final matchesSection =
+          _selectedSection == 'All Sections' ||
+          student.section == _selectedSection;
+      return matchesClass && matchesSection;
+    }).toList();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final students = _filteredStudents;
+    final average = students.isEmpty
+        ? 0
+        : students.map((student) => student.total).reduce((a, b) => a + b) ~/
+              students.length;
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _StudentsHeroCard(studentCount: students.length, average: average),
+          const SizedBox(height: 20),
+          _FilterCard(
+            selectedClass: _selectedClass,
+            selectedSection: _selectedSection,
+            onClassChanged: (value) => setState(() => _selectedClass = value),
+            onSectionChanged: (value) =>
+                setState(() => _selectedSection = value),
+          ),
+          const SizedBox(height: 20),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Text(
+                        'Students Table',
+                        style: Theme.of(context).textTheme.titleLarge,
+                      ),
+                      const Spacer(),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 8,
+                        ),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFECFDF5),
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                        child: const Text(
+                          'Auto-updated after scan',
+                          style: TextStyle(
+                            color: Color(0xFF0F766E),
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: DataTable(
+                      columnSpacing: 24,
+                      headingRowColor: WidgetStateProperty.all(
+                        const Color(0xFFF8FAFC),
+                      ),
+                      columns: const [
+                        DataColumn(label: Text('Name')),
+                        DataColumn(label: Text('Quiz')),
+                        DataColumn(label: Text('Mid')),
+                        DataColumn(label: Text('Assign')),
+                        DataColumn(label: Text('Final')),
+                        DataColumn(label: Text('Total')),
+                        DataColumn(label: Text('Grade')),
+                      ],
+                      rows: students
+                          .map(
+                            (student) => DataRow(
+                              onSelectChanged: (selected) {
+                                if (selected ?? false) {
+                                  Navigator.of(context).push(
+                                    MaterialPageRoute<void>(
+                                      builder: (_) =>
+                                          StudentDetailScreen(student: student),
+                                    ),
+                                  );
+                                }
+                              },
+                              cells: [
+                                DataCell(
+                                  Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      Text(
+                                        student.name,
+                                        style: const TextStyle(
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                      ),
+                                      Text(
+                                        student.classLabel,
+                                        style: const TextStyle(
+                                          color: Color(0xFF64748B),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                DataCell(Text('${student.quiz}')),
+                                DataCell(Text('${student.mid}')),
+                                DataCell(Text('${student.assignment}')),
+                                DataCell(Text('${student.finalExam}')),
+                                DataCell(Text('${student.total}')),
+                                DataCell(_GradeBadge(grade: student.grade)),
+                              ],
+                            ),
+                          )
+                          .toList(),
+                    ),
+                  ),
+                  if (students.isEmpty) ...[
+                    const SizedBox(height: 16),
+                    const Text(
+                      'No students found for the selected filters.',
+                      style: TextStyle(color: Color(0xFF64748B)),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StudentsHeroCard extends StatelessWidget {
+  const _StudentsHeroCard({required this.studentCount, required this.average});
+
+  final int studentCount;
+  final int average;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(28),
+        gradient: const LinearGradient(
+          colors: [Color(0xFF1D4ED8), Color(0xFF0F766E), Color(0xFF0F172A)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Students',
+            style: Theme.of(
+              context,
+            ).textTheme.headlineMedium?.copyWith(color: Colors.white),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Track scores, open student details, and review feedback history.',
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+              color: Colors.white.withValues(alpha: 0.88),
+            ),
+          ),
+          const SizedBox(height: 20),
+          Row(
+            children: [
+              Expanded(
+                child: _HeroStat(
+                  label: 'Visible Students',
+                  value: '$studentCount',
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _HeroStat(label: 'Average Total', value: '$average%'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _HeroStat extends StatelessWidget {
+  const _HeroStat({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            value,
+            style: Theme.of(
+              context,
+            ).textTheme.titleLarge?.copyWith(color: Colors.white),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            label,
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+              color: Colors.white.withValues(alpha: 0.8),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _FilterCard extends StatelessWidget {
+  const _FilterCard({
+    required this.selectedClass,
+    required this.selectedSection,
+    required this.onClassChanged,
+    required this.onSectionChanged,
+  });
+
+  final String selectedClass;
+  final String selectedSection;
+  final ValueChanged<String> onClassChanged;
+  final ValueChanged<String> onSectionChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final isNarrow = constraints.maxWidth < 520;
+
+            final classDropdown = _FilterDropdown(
+              label: 'Class',
+              value: selectedClass,
+              items: const ['All Classes', 'Grade 7', 'Grade 8'],
+              onChanged: onClassChanged,
+            );
+
+            final sectionDropdown = _FilterDropdown(
+              label: 'Section',
+              value: selectedSection,
+              items: const ['All Sections', 'A', 'B', 'C'],
+              onChanged: onSectionChanged,
+            );
+
+            if (isNarrow) {
+              return Column(
+                children: [
+                  classDropdown,
+                  const SizedBox(height: 12),
+                  sectionDropdown,
+                ],
+              );
+            }
+
+            return Row(
+              children: [
+                Expanded(child: classDropdown),
+                const SizedBox(width: 12),
+                Expanded(child: sectionDropdown),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+class _FilterDropdown extends StatelessWidget {
+  const _FilterDropdown({
+    required this.label,
+    required this.value,
+    required this.items,
+    required this.onChanged,
+  });
+
+  final String label;
+  final String value;
+  final List<String> items;
+  final ValueChanged<String> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return DropdownButtonFormField<String>(
+      initialValue: value,
+      decoration: InputDecoration(
+        labelText: label,
+        border: const OutlineInputBorder(),
+        filled: true,
+        fillColor: Colors.white,
+      ),
+      items: items
+          .map((item) => DropdownMenuItem(value: item, child: Text(item)))
+          .toList(),
+      onChanged: (value) {
+        if (value != null) {
+          onChanged(value);
+        }
+      },
+    );
+  }
+}
+
+class _GradeBadge extends StatelessWidget {
+  const _GradeBadge({required this.grade});
+
+  final String grade;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = switch (grade) {
+      'A' => const Color(0xFF0F766E),
+      'B' => const Color(0xFF1D4ED8),
+      'C' => const Color(0xFFCA8A04),
+      'D' => const Color(0xFFEA580C),
+      _ => const Color(0xFFDC2626),
+    };
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        grade,
+        style: TextStyle(color: color, fontWeight: FontWeight.w700),
+      ),
+    );
+  }
+}
