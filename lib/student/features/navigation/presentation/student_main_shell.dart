@@ -43,6 +43,7 @@ class StudentMainShell extends StatefulWidget {
 
 class _StudentMainShellState extends State<StudentMainShell> {
   int _currentIndex = 0;
+  String _currentLanguage = 'English';
   final List<StudentLearningRecord> _history = [
     StudentLearningRecord(
       topic: 'Fractions on a Number Line',
@@ -85,6 +86,12 @@ class _StudentMainShellState extends State<StudentMainShell> {
     });
   }
 
+  void _updateLanguage(String language) {
+    setState(() {
+      _currentLanguage = language;
+    });
+  }
+
   void _saveLearningRecord(StudentLearningRecord record) {
     setState(() {
       _history.insert(0, record);
@@ -107,7 +114,11 @@ class _StudentMainShellState extends State<StudentMainShell> {
         onOpenChat: () => _selectTab(3),
         onOpenLearning: () => _selectTab(2),
       ),
-      StudentScanFlowScreen(onSaveToHistory: _saveLearningRecord),
+      StudentScanFlowScreen(
+        selectedLanguage: _currentLanguage,
+        onLanguageChanged: _updateLanguage,
+        onSaveToHistory: _saveLearningRecord,
+      ),
       StudentLearnScreen(
         learningHistory: _history,
         onDeleteRecord: (record) {
@@ -121,12 +132,75 @@ class _StudentMainShellState extends State<StudentMainShell> {
         },
       ),
       const StudentChatScreen(),
-      const StudentProfileScreen(),
+      StudentProfileScreen(
+        defaultLanguage: _currentLanguage,
+        onLanguageChanged: _updateLanguage,
+      ),
     ];
 
     return Scaffold(
       body: SafeArea(
         child: IndexedStack(index: _currentIndex, children: screens),
+      ),
+      floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
+      floatingActionButton: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          FloatingActionButton.small(
+            heroTag: 'student-language-fab',
+            onPressed: () async {
+              final selected = await showModalBottomSheet<String>(
+                context: context,
+                builder: (context) {
+                  final languages = [
+                    'English',
+                    'Amharic',
+                    'Afaan Oromoo',
+                    'Tigrinya',
+                  ];
+                  return SafeArea(
+                    child: Padding(
+                      padding: const EdgeInsets.all(20),
+                      child: Wrap(
+                        spacing: 10,
+                        runSpacing: 10,
+                        children: languages
+                            .map(
+                              (language) => ChoiceChip(
+                                label: Text(language),
+                                selected: _currentLanguage == language,
+                                onSelected: (_) {
+                                  Navigator.of(context).pop(language);
+                                },
+                              ),
+                            )
+                            .toList(),
+                      ),
+                    ),
+                  );
+                },
+              );
+
+              if (selected != null) {
+                _updateLanguage(selected);
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Language switched to $selected.')),
+                  );
+                }
+              }
+            },
+            child: const Icon(Icons.translate_rounded),
+          ),
+          const SizedBox(height: 12),
+          FloatingActionButton.extended(
+            heroTag: 'student-scan-fab',
+            onPressed: () => _selectTab(1),
+            icon: const Icon(Icons.document_scanner_rounded),
+            label: const Text('Scan'),
+          ),
+        ],
       ),
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _currentIndex,

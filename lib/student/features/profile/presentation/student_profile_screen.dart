@@ -1,14 +1,20 @@
 import 'package:flutter/material.dart';
 
 class StudentProfileScreen extends StatefulWidget {
-  const StudentProfileScreen({super.key});
+  const StudentProfileScreen({
+    super.key,
+    required this.defaultLanguage,
+    required this.onLanguageChanged,
+  });
+
+  final String defaultLanguage;
+  final ValueChanged<String> onLanguageChanged;
 
   @override
   State<StudentProfileScreen> createState() => _StudentProfileScreenState();
 }
 
 class _StudentProfileScreenState extends State<StudentProfileScreen> {
-  String _defaultLanguage = 'English';
   bool _voiceEnabled = true;
 
   @override
@@ -24,12 +30,10 @@ class _StudentProfileScreenState extends State<StudentProfileScreen> {
             const _StudentInfoCard(),
             const SizedBox(height: 18),
             _PreferencesCard(
-              defaultLanguage: _defaultLanguage,
+              defaultLanguage: widget.defaultLanguage,
               voiceEnabled: _voiceEnabled,
               onLanguageChanged: (value) {
-                setState(() {
-                  _defaultLanguage = value;
-                });
+                widget.onLanguageChanged(value);
               },
               onVoiceChanged: (value) {
                 setState(() {

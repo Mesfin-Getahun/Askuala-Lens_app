@@ -5,8 +5,15 @@ import '../../navigation/presentation/student_main_shell.dart';
 enum StudentScanStep { capture, processing, explanation }
 
 class StudentScanFlowScreen extends StatefulWidget {
-  const StudentScanFlowScreen({super.key, required this.onSaveToHistory});
+  const StudentScanFlowScreen({
+    super.key,
+    required this.selectedLanguage,
+    required this.onLanguageChanged,
+    required this.onSaveToHistory,
+  });
 
+  final String selectedLanguage;
+  final ValueChanged<String> onLanguageChanged;
   final ValueChanged<StudentLearningRecord> onSaveToHistory;
 
   @override
@@ -16,8 +23,8 @@ class StudentScanFlowScreen extends StatefulWidget {
 class _StudentScanFlowScreenState extends State<StudentScanFlowScreen> {
   StudentScanStep _currentStep = StudentScanStep.capture;
   bool _flashEnabled = false;
-  String _selectedLanguage = 'English';
-  String _explanationLanguage = 'English';
+  late String _selectedLanguage;
+  late String _explanationLanguage;
 
   final List<String> _languages = const [
     'Amharic',
@@ -35,6 +42,23 @@ class _StudentScanFlowScreenState extends State<StudentScanFlowScreen> {
     example:
         'If a family cuts one injera into 4 equal pieces and you eat 3 pieces, you have eaten 3/4 of the injera.',
   );
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedLanguage = widget.selectedLanguage;
+    _explanationLanguage = widget.selectedLanguage;
+  }
+
+  @override
+  void didUpdateWidget(covariant StudentScanFlowScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    if (oldWidget.selectedLanguage != widget.selectedLanguage) {
+      _selectedLanguage = widget.selectedLanguage;
+      _explanationLanguage = widget.selectedLanguage;
+    }
+  }
 
   Future<void> _startProcessing() async {
     setState(() {
@@ -87,6 +111,7 @@ class _StudentScanFlowScreenState extends State<StudentScanFlowScreen> {
                   _selectedLanguage = value;
                   _explanationLanguage = value;
                 });
+                widget.onLanguageChanged(value);
               },
               onToggleFlash: () {
                 setState(() {
@@ -105,6 +130,7 @@ class _StudentScanFlowScreenState extends State<StudentScanFlowScreen> {
                 setState(() {
                   _explanationLanguage = value;
                 });
+                widget.onLanguageChanged(value);
               },
               onSave: _saveToHistory,
               onAskFollowUp: () {
@@ -113,12 +139,65 @@ class _StudentScanFlowScreenState extends State<StudentScanFlowScreen> {
                 );
               },
               onListen: () {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text(
-                      'Voice playback started in $_explanationLanguage.',
-                    ),
-                  ),
+                showModalBottomSheet<void>(
+                  context: context,
+                  builder: (context) {
+                    return SafeArea(
+                      child: Padding(
+                        padding: const EdgeInsets.all(20),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Voice Explanation',
+                              style: Theme.of(context).textTheme.titleLarge,
+                            ),
+                            const SizedBox(height: 10),
+                            Text(
+                              'Playing explanation in $_explanationLanguage.',
+                              style: Theme.of(context).textTheme.bodyMedium,
+                            ),
+                            const SizedBox(height: 16),
+                            Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.all(16),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFF1F5F9),
+                                borderRadius: BorderRadius.circular(20),
+                              ),
+                              child: Text(_sampleExplanation.explanation),
+                            ),
+                            const SizedBox(height: 16),
+                            Row(
+                              children: [
+                                FilledButton.icon(
+                                  onPressed: () {
+                                    Navigator.of(context).pop();
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(
+                                        content: Text(
+                                          'Voice playback started in $_explanationLanguage.',
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                  icon: const Icon(Icons.play_arrow_rounded),
+                                  label: const Text('Play'),
+                                ),
+                                const SizedBox(width: 10),
+                                OutlinedButton.icon(
+                                  onPressed: () => Navigator.of(context).pop(),
+                                  icon: const Icon(Icons.close_rounded),
+                                  label: const Text('Close'),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
                 );
               },
               onSimplify: () {
