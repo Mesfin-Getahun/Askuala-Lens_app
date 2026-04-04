@@ -19,7 +19,7 @@ Askuala Lens introduces a digital platform that uses AI to automate grading, pro
 
 ### 👨‍🏫 For Teachers:
 1. Teacher logs into the system  
-2. Uploads or scans student assignments  
+2. Uploads or scans student assesment  
 3. System processes the content using AI  
 4. Suggested grades are generated  
 5. Teacher reviews and confirms grades  
