@@ -144,25 +144,38 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                       ),
                       const SizedBox(height: 20),
                       if (isNarrow) ...[
-                        _MetricCard(
-                          label: 'Average Score',
-                          value: average.toStringAsFixed(1),
-                          accent: const Color(0xFF0F766E),
-                          icon: Icons.show_chart,
+                        Row(
+                          children: [
+                            Expanded(
+                              child: _MetricCard(
+                                label: 'Highest Score',
+                                value: '$highest',
+                                accent: const Color(0xFF1D4ED8),
+                                icon: Icons.keyboard_double_arrow_up,
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: _MetricCard(
+                                label: 'Lowest Score',
+                                value: '$lowest',
+                                accent: const Color(0xFFEA580C),
+                                icon: Icons.keyboard_double_arrow_down,
+                              ),
+                            ),
+                          ],
                         ),
                         const SizedBox(height: 12),
-                        _MetricCard(
-                          label: 'Highest Score',
-                          value: '$highest',
-                          accent: const Color(0xFF1D4ED8),
-                          icon: Icons.keyboard_double_arrow_up,
-                        ),
-                        const SizedBox(height: 12),
-                        _MetricCard(
-                          label: 'Lowest Score',
-                          value: '$lowest',
-                          accent: const Color(0xFFEA580C),
-                          icon: Icons.keyboard_double_arrow_down,
+                        Center(
+                          child: FractionallySizedBox(
+                            widthFactor: 0.62,
+                            child: _MetricCard(
+                              label: 'Average Score',
+                              value: average.toStringAsFixed(1),
+                              accent: const Color(0xFF0F766E),
+                              icon: Icons.show_chart,
+                            ),
+                          ),
                         ),
                       ] else
                         Row(

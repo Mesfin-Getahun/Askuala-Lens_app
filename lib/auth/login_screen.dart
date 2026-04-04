@@ -132,7 +132,7 @@ class _LoginScreenState extends State<LoginScreen> {
                               borderRadius: BorderRadius.circular(999),
                             ),
                             child: const Text(
-                              'Firestore Login',
+                              'Login',
                               style: TextStyle(
                                 color: Color(0xFF115E59),
                                 fontWeight: FontWeight.w700,
@@ -146,7 +146,7 @@ class _LoginScreenState extends State<LoginScreen> {
                           ),
                           const SizedBox(height: 8),
                           Text(
-                            'The app finds the profile in the teachers or students collection, checks the stored password data, then routes teachers and students automatically.',
+                            ' use the Askuala School given usernames and passwords',
                             style: theme.textTheme.bodyMedium,
                           ),
                           const SizedBox(height: 24),
@@ -192,7 +192,7 @@ class _LoginScreenState extends State<LoginScreen> {
                               border: Border.all(color: const Color(0xFFE2E8F0)),
                             ),
                             child: Text(
-                              'Firestore collections: teachers and students\nSupported password fields: password, pass, userPassword, passwordHash\nCLIENT_PLAINTEXT passwords are supported',
+                              'please use the usernames and passwords ',
                               style: theme.textTheme.bodyMedium,
                             ),
                           ),

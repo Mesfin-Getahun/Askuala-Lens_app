@@ -4,10 +4,10 @@ import 'dart:io';
 import 'package:camera/camera.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
-import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 
 import '../../../../auth/data/firestore_login_service.dart';
 import '../data/gemini_scan_service.dart';
+import '../data/ocr_extraction_service.dart';
 import '../data/scan_local_storage.dart';
 
 enum ScanStep { context, camera, processing, review }
@@ -101,6 +101,54 @@ class AssessmentKey {
   }
 }
 
+QuestionKeyItem _buildSampleQuestion(int index) {
+  return QuestionKeyItem(
+    number: index + 1,
+    type: switch (index) {
+      0 => QuestionType.trueFalse,
+      1 => QuestionType.multipleChoice,
+      2 => QuestionType.matching,
+      3 => QuestionType.fillInBlank,
+      _ => QuestionType.shortAnswer,
+    },
+    description: switch (index) {
+      0 => 'Decide whether the statement is true or false.',
+      1 => 'Choose the correct option from A, B, C, or D.',
+      2 => 'Match each item in Column A with Column B.',
+      3 => 'Fill in the missing word or number.',
+      _ => 'Write the expected short answer.',
+    },
+    correctAnswer: switch (index) {
+      0 => 'True',
+      1 => 'B',
+      2 => '1-C, 2-A, 3-B',
+      3 => 'denominator',
+      _ => 'A fraction represents part of a whole.',
+    },
+    marks: switch (index) {
+      2 => 4,
+      4 => 5,
+      _ => 2,
+    }.toDouble(),
+  );
+}
+
+List<QuestionKeyItem> _buildQuestionList({required int count}) {
+  return List.generate(count, (index) {
+    if (index < 5) {
+      return _buildSampleQuestion(index);
+    }
+
+    return QuestionKeyItem(
+      number: index + 1,
+      type: QuestionType.multipleChoice,
+      description: _defaultDescriptionForType(QuestionType.multipleChoice),
+      correctAnswer: '',
+      marks: 1,
+    );
+  });
+}
+
 String _defaultDescriptionForType(QuestionType type) {
   return switch (type) {
     QuestionType.trueFalse =>
@@ -130,10 +178,41 @@ AssessmentKey _sanitizeAssessmentKey(AssessmentKey key) {
     questions: key.questions
         .asMap()
         .entries
-        .map((entry) => entry.value.normalized(fallbackNumber: entry.key + 1))
+        .map(
+          (entry) => entry.value.copyWith(
+            number: entry.key + 1,
+            description: entry.value.resolvedDescription,
+            correctAnswer: entry.value.resolvedAnswer,
+            marks: entry.value.resolvedMarks,
+            type: entry.value.resolvedType,
+          ),
+        )
         .toList(),
   );
 }
+
+const List<({QuestionType type, String description})> _answerKeyPreviewRows = [
+  (
+    type: QuestionType.trueFalse,
+    description: 'Decide whether the statement is true or false.',
+  ),
+  (
+    type: QuestionType.multipleChoice,
+    description: 'Choose the correct option from A, B, C, or D.',
+  ),
+  (
+    type: QuestionType.matching,
+    description: 'Match each item in Column A with Column B.',
+  ),
+  (
+    type: QuestionType.fillInBlank,
+    description: 'Fill in the missing word or number.',
+  ),
+  (
+    type: QuestionType.shortAnswer,
+    description: 'Write the expected short answer.',
+  ),
+];
 
 class ScanComparisonItem {
   const ScanComparisonItem({
@@ -352,6 +431,7 @@ class ScanFlowScreen extends StatefulWidget {
 
 class _ScanFlowScreenState extends State<ScanFlowScreen> {
   final GeminiScanService _geminiScanService = GeminiScanService();
+  final OcrExtractionService _ocrExtractionService = OcrExtractionService();
   ScanStep _currentStep = ScanStep.context;
   String _selectedClass = 'Grade 7';
   String _selectedSection = 'A';
@@ -366,6 +446,7 @@ class _ScanFlowScreenState extends State<ScanFlowScreen> {
   String? _activeSessionId;
   String? _lastProcessedImagePath;
   String _combinedExtractedText = '';
+  final TextEditingController _ocrPreviewController = TextEditingController();
   final List<String> _capturedImagePaths = [];
   final TextEditingController _feedbackController = TextEditingController(
     text: 'No scan processed yet.',
@@ -382,6 +463,7 @@ class _ScanFlowScreenState extends State<ScanFlowScreen> {
 
   @override
   void dispose() {
+    _ocrPreviewController.dispose();
     _feedbackController.dispose();
     super.dispose();
   }
@@ -399,6 +481,7 @@ class _ScanFlowScreenState extends State<ScanFlowScreen> {
     _isProcessing = false;
     _latestEvaluation = null;
     _combinedExtractedText = '';
+    _ocrPreviewController.clear();
     _lastProcessedImagePath = null;
     _score = 0;
     _feedbackController.text = 'No scan processed yet.';
@@ -420,9 +503,14 @@ class _ScanFlowScreenState extends State<ScanFlowScreen> {
     });
   }
 
-  Future<void> _handlePaperCaptured(String path) async {
+  Future<void> _handlePaperCaptured(
+    String path, {
+    String? extractedText,
+    String? ocrProvider,
+  }) async {
     try {
       final sessionId = _activeSessionId ?? _buildSessionId();
+      final normalizedText = extractedText?.trim() ?? '';
       final persistedPath = await ScanLocalStorage.persistCapturedImage(path);
       final id = await ScanLocalStorage.addCapturedImage({
         'sessionId': sessionId,
@@ -431,10 +519,13 @@ class _ScanFlowScreenState extends State<ScanFlowScreen> {
         'class': _selectedClass,
         'section': _selectedSection,
         'assessmentType': _assessmentType,
-        'ocrText': '',
-        'processed': false,
-        'ocrProvider': 'google_mlkit_local',
+        'ocrText': normalizedText,
+        'processed': normalizedText.isNotEmpty,
+        'ocrProvider': ocrProvider ?? 'google_mlkit_local',
         'ocrApiReady': true,
+        'ocrFailed': normalizedText.isEmpty,
+        if (normalizedText.isNotEmpty)
+          'processedAt': DateTime.now().toIso8601String(),
       });
 
       if (!mounted) {
@@ -447,7 +538,9 @@ class _ScanFlowScreenState extends State<ScanFlowScreen> {
         _lastProcessedImagePath = persistedPath;
       });
 
-      unawaited(_processSingleImage(id));
+      if (normalizedText.isEmpty) {
+        unawaited(_processSingleImage(id));
+      }
     } catch (error) {
       if (!mounted) {
         return;
@@ -491,16 +584,14 @@ class _ScanFlowScreenState extends State<ScanFlowScreen> {
         return;
       }
 
-      final inputImage = InputImage.fromFilePath(path);
-      final textRecognizer = TextRecognizer(script: TextRecognitionScript.latin);
       try {
-        final recognized = await textRecognizer.processImage(inputImage);
-        final extracted = recognized.text;
+        final extraction = await _ocrExtractionService.extractText(path);
         await ScanLocalStorage.updateCapturedImage(key, {
           ...data,
-          'ocrText': extracted,
+          'ocrText': extraction.text,
           'processed': true,
-          'ocrFailed': false,
+          'ocrFailed': extraction.text.trim().isEmpty,
+          'ocrProvider': extraction.provider,
           'processedAt': DateTime.now().toIso8601String(),
         });
       } catch (_) {
@@ -509,8 +600,6 @@ class _ScanFlowScreenState extends State<ScanFlowScreen> {
           'processed': false,
           'ocrFailed': true,
         });
-      } finally {
-        textRecognizer.close();
       }
     } catch (_) {
       // Keep capture flow resilient even if OCR is temporarily unavailable.
@@ -531,6 +620,20 @@ class _ScanFlowScreenState extends State<ScanFlowScreen> {
       _processingError = null;
     });
     unawaited(_processCurrentSession());
+  }
+
+  String _buildEditableOcrPreview(String rawCombinedOcrText) {
+    final numberedAnswers = _assessmentKey.questions.asMap().entries.map((entry) {
+      final question = entry.value.normalized(fallbackNumber: entry.key + 1);
+      final extractedAnswer = _extractAnswerForQuestion(
+        rawCombinedOcrText,
+        question.resolvedNumber(entry.key + 1),
+      );
+
+      return '${question.resolvedNumber(entry.key + 1)}. $extractedAnswer'.trimRight();
+    }).toList();
+
+    return numberedAnswers.join('\n');
   }
 
   Future<void> _processCurrentSession() async {
@@ -564,21 +667,16 @@ class _ScanFlowScreenState extends State<ScanFlowScreen> {
           .map((image) => image['ocrText']?.toString().trim() ?? '')
           .where((text) => text.isNotEmpty)
           .join('\n\n');
-
-      final evaluation = await _evaluateScan(
-        sessionId: sessionId,
-        combinedOcrText: rawCombinedOcrText,
-      );
+      final editablePreview = _buildEditableOcrPreview(rawCombinedOcrText);
 
       if (!mounted) {
         return;
       }
 
       setState(() {
-        _latestEvaluation = evaluation;
-        _combinedExtractedText = evaluation.combinedOcrText;
-        _score = evaluation.scorePercent;
-        _feedbackController.text = evaluation.feedback;
+        _latestEvaluation = null;
+        _combinedExtractedText = editablePreview;
+        _ocrPreviewController.text = editablePreview;
         _lastProcessedImagePath =
             storedImages.isNotEmpty ? storedImages.last['path']?.toString() : null;
         _isProcessing = false;
@@ -594,41 +692,62 @@ class _ScanFlowScreenState extends State<ScanFlowScreen> {
     }
   }
 
+  Future<void> _compareEditedOcrPreview() async {
+    final sessionId = _activeSessionId;
+    if (sessionId == null) {
+      setState(() {
+        _processingError = 'No active scan session was found.';
+      });
+      return;
+    }
+
+    final editedText = _ocrPreviewController.text.trim();
+    if (editedText.isEmpty) {
+      setState(() {
+        _processingError = 'Edit the stored OCR preview before comparing answers.';
+      });
+      return;
+    }
+
+    setState(() {
+      _isProcessing = true;
+      _processingError = null;
+      _combinedExtractedText = editedText;
+    });
+
+    try {
+      final evaluation = await _evaluateScan(
+        sessionId: sessionId,
+        combinedOcrText: editedText,
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _latestEvaluation = evaluation;
+        _combinedExtractedText = editedText;
+        _score = evaluation.scorePercent;
+        _feedbackController.text = evaluation.feedback;
+        _isProcessing = false;
+        _currentStep = ScanStep.review;
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _isProcessing = false;
+        _processingError = error.toString();
+      });
+    }
+  }
+
   AssessmentKey _buildDefaultAssessmentKey(String assessmentType) {
     return AssessmentKey(
       assessmentType: assessmentType,
-      questions: List.generate(
-        5,
-        (index) => QuestionKeyItem(
-          number: index + 1,
-          type: switch (index) {
-            0 => QuestionType.trueFalse,
-            1 => QuestionType.multipleChoice,
-            2 => QuestionType.matching,
-            3 => QuestionType.fillInBlank,
-            _ => QuestionType.shortAnswer,
-          },
-          description: switch (index) {
-            0 => 'Decide whether the statement is true or false.',
-            1 => 'Choose the correct option from A, B, C, or D.',
-            2 => 'Match each item in Column A with Column B.',
-            3 => 'Fill in the missing word or number.',
-            _ => 'Write the expected short answer.',
-          },
-          correctAnswer: switch (index) {
-            0 => 'True',
-            1 => 'B',
-            2 => '1-C, 2-A, 3-B',
-            3 => 'denominator',
-            _ => 'A fraction represents part of a whole.',
-          },
-          marks: switch (index) {
-            2 => 4,
-            4 => 5,
-            _ => 2,
-          }.toDouble(),
-        ),
-      ),
+      questions: _buildQuestionList(count: 5),
     );
   }
 
@@ -805,6 +924,10 @@ class _ScanFlowScreenState extends State<ScanFlowScreen> {
   }
 
   Future<void> _openAnswerKeyEditor() async {
+    final sampleKey = _sanitizeAssessmentKey(
+      _buildDefaultAssessmentKey(_assessmentType),
+    );
+
     final updatedKey = await showModalBottomSheet<AssessmentKey>(
       context: context,
       isScrollControlled: true,
@@ -812,7 +935,7 @@ class _ScanFlowScreenState extends State<ScanFlowScreen> {
       builder: (context) {
         return _AnswerKeyEditorSheetV2(
           assessmentType: _assessmentType,
-          initialKey: _assessmentKey.copyWith(assessmentType: _assessmentType),
+          initialKey: sampleKey,
         );
       },
     );
@@ -952,8 +1075,10 @@ class _ScanFlowScreenState extends State<ScanFlowScreen> {
                     capturedCount: _capturedImagePaths.length,
                     isProcessing: _isProcessing,
                     processingError: _processingError,
+                    ocrPreviewController: _ocrPreviewController,
                     extractedText: _combinedExtractedText,
-                    onContinue: () => _goToStep(ScanStep.review),
+                    onContinue: _compareEditedOcrPreview,
+                    onBackToScanning: () => _goToStep(ScanStep.camera),
                     onRetry: _processBatchCapture,
                   ),
                   ScanStep.review => _ReviewResultView(
@@ -1317,7 +1442,11 @@ class _CameraScanView extends StatefulWidget {
   final ValueChanged<bool> onBatchModeChanged;
   final ValueChanged<bool> onFlashChanged;
   final int capturedCount;
-  final Future<void> Function(String path) onCapture;
+  final Future<void> Function(
+    String path, {
+    String? extractedText,
+    String? ocrProvider,
+  }) onCapture;
   final VoidCallback onProcessBatch;
 
   @override
@@ -1325,9 +1454,15 @@ class _CameraScanView extends StatefulWidget {
 }
 
 class _CameraScanViewState extends State<_CameraScanView> {
+  static const Duration _autoScanRetryDelay = Duration(milliseconds: 1400);
+
   CameraController? _controller;
+  final OcrExtractionService _ocrExtractionService = OcrExtractionService();
   Future<void>? _controllerFuture;
+  Timer? _autoScanTimer;
   String? _cameraError;
+  String _autoScanStatus = 'Tap Scan Now to start automatic scanning.';
+  bool _isAutoScanning = false;
   bool _isCapturing = false;
   bool _flashPulseVisible = false;
 
@@ -1408,7 +1543,22 @@ class _CameraScanViewState extends State<_CameraScanView> {
     await _applyFlashMode(value);
   }
 
+  void _startAutoScanning() {
+    if (_isCapturing || _isAutoScanning) {
+      return;
+    }
+
+    setState(() {
+      _cameraError = null;
+      _isAutoScanning = true;
+      _autoScanStatus = 'Automatic scanning started. Hold the paper steady.';
+    });
+    _scheduleAutoScan(const Duration(milliseconds: 250));
+  }
+
   Future<void> _capturePaper() async {
+    _autoScanTimer?.cancel();
+    _isAutoScanning = false;
     final controller = _controller;
     final controllerFuture = _controllerFuture;
     if (_isCapturing || controller == null || controllerFuture == null) {
@@ -1447,8 +1597,119 @@ class _CameraScanViewState extends State<_CameraScanView> {
     }
   }
 
+  void _scheduleAutoScan(Duration delay) {
+    if (!_isAutoScanning) {
+      return;
+    }
+    _autoScanTimer?.cancel();
+    _autoScanTimer = Timer(delay, () {
+      if (mounted && _isAutoScanning) {
+        unawaited(_attemptAutoScanCapture());
+      }
+    });
+  }
+
+  bool _hasMeaningfulText(String text) {
+    final normalized = text.trim().replaceAll(RegExp(r'\s+'), ' ');
+    if (normalized.length < 24) {
+      return false;
+    }
+
+    final words = RegExp(r'[A-Za-z0-9]{2,}')
+        .allMatches(normalized)
+        .map((match) => match.group(0)!)
+        .toList();
+
+    if (words.length < 4) {
+      return false;
+    }
+
+    final longWords = words.where((word) => word.length >= 4).length;
+    return longWords >= 2;
+  }
+
+  Future<void> _attemptAutoScanCapture() async {
+    final controller = _controller;
+    final controllerFuture = _controllerFuture;
+    if (!mounted ||
+        _isCapturing ||
+        controller == null ||
+        controllerFuture == null ||
+        _cameraError != null) {
+      return;
+    }
+
+    setState(() {
+      _isCapturing = true;
+      _autoScanStatus = 'Scanning page automatically...';
+    });
+
+    try {
+      await controllerFuture;
+      final image = await controller.takePicture();
+
+      if (mounted && widget.flashEnabled) {
+        setState(() => _flashPulseVisible = true);
+        await Future<void>.delayed(const Duration(milliseconds: 130));
+        if (mounted) {
+          setState(() => _flashPulseVisible = false);
+        }
+      }
+
+      final extraction = await _ocrExtractionService.extractText(image.path);
+      if (_hasMeaningfulText(extraction.text)) {
+        if (!mounted) {
+          return;
+        }
+
+        setState(() {
+          _autoScanStatus = 'Readable text found. Saving page automatically...';
+        });
+
+        await widget.onCapture(
+          image.path,
+          extractedText: extraction.text,
+          ocrProvider: extraction.provider,
+        );
+
+        if (mounted) {
+          setState(() {
+            _isAutoScanning = false;
+            _autoScanStatus =
+                'Readable text saved. Tap Scan Now when you want to scan the next page.';
+          });
+        }
+      } else {
+        await File(image.path).delete().catchError((_) {});
+        if (mounted) {
+          setState(() {
+            _autoScanStatus =
+                'No clear text yet. Hold the paper steady inside the frame.';
+          });
+          _scheduleAutoScan(_autoScanRetryDelay);
+        }
+      }
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _isAutoScanning = false;
+        _cameraError = 'Auto scan failed. ${error.toString()}';
+        _autoScanStatus = 'Auto scan paused. Tap Scan Now to try again.';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isCapturing = false;
+        });
+      }
+    }
+  }
+
   @override
   void dispose() {
+    _autoScanTimer?.cancel();
     _controller?.dispose();
     super.dispose();
   }
@@ -1550,19 +1811,46 @@ class _CameraScanViewState extends State<_CameraScanView> {
               ],
             ),
             const SizedBox(height: 18),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF0FDF4),
+                borderRadius: BorderRadius.circular(18),
+                border: Border.all(color: const Color(0xFFBBF7D0)),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Icon(Icons.auto_mode_rounded, color: Color(0xFF15803D)),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      _autoScanStatus,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: const Color(0xFF166534),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 18),
             SizedBox(
               width: double.infinity,
               child: FilledButton.icon(
-                onPressed: _isCapturing ? null : _capturePaper,
+                onPressed: _isCapturing || _isAutoScanning
+                    ? null
+                    : _startAutoScanning,
                 icon: Icon(
                   _isCapturing ? Icons.hourglass_top : Icons.camera_alt_outlined,
                 ),
                 label: Text(
                   _isCapturing
-                      ? 'Capturing...'
-                      : widget.batchMode
-                      ? 'Capture Page'
-                      : 'Capture Paper',
+                      ? 'Scanning...'
+                      : _isAutoScanning
+                      ? 'Auto Scanning...'
+                      : 'Scan Now',
                 ),
               ),
             ),
@@ -1686,8 +1974,10 @@ class _ProcessingView extends StatelessWidget {
     required this.capturedCount,
     required this.isProcessing,
     required this.processingError,
+    required this.ocrPreviewController,
     required this.extractedText,
     required this.onContinue,
+    required this.onBackToScanning,
     required this.onRetry,
   });
 
@@ -1695,8 +1985,10 @@ class _ProcessingView extends StatelessWidget {
   final int capturedCount;
   final bool isProcessing;
   final String? processingError;
+  final TextEditingController ocrPreviewController;
   final String extractedText;
-  final VoidCallback onContinue;
+  final Future<void> Function() onContinue;
+  final VoidCallback onBackToScanning;
   final VoidCallback onRetry;
 
   @override
@@ -1721,15 +2013,21 @@ class _ProcessingView extends StatelessWidget {
               ),
             const SizedBox(height: 20),
             Text(
-              isProcessing ? 'Analyzing paper...' : 'Processing complete',
+              isProcessing
+                  ? extractedText.isEmpty
+                        ? 'Preparing OCR preview...'
+                        : 'Comparing answers...'
+                  : 'OCR Preview Ready',
               style: Theme.of(context).textTheme.titleLarge,
             ),
             const SizedBox(height: 10),
             Text(
               processingError ??
                   (isProcessing
-                      ? 'Reading stored pages from Hive, running OCR, then sending the extracted text to Gemini for cleanup, answer extraction, and grading.'
-                      : 'Processed scan text is ready for review, including Gemini cleanup when available.'),
+                      ? extractedText.isEmpty
+                            ? 'Reading stored pages from Hive and building a numbered OCR draft for teacher review.'
+                            : 'Comparing the edited OCR preview with the actual answer key.'
+                      : 'Edit the stored OCR preview below, then compare it with the actual answer key.'),
               style: Theme.of(context).textTheme.bodyMedium,
               textAlign: TextAlign.center,
             ),
@@ -1816,24 +2114,46 @@ class _ProcessingView extends StatelessWidget {
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      extractedText.length > 280
-                          ? '${extractedText.substring(0, 280)}...'
-                          : extractedText,
+                      'Edit each line using the correct question number before comparing.',
                       style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: ocrPreviewController,
+                      enabled: !isProcessing,
+                      minLines: 8,
+                      maxLines: 14,
+                      decoration: const InputDecoration(
+                        hintText: '1. Answer\n2. Answer\n3. Answer',
+                        border: OutlineInputBorder(),
+                        alignLabelWithHint: true,
+                      ),
                     ),
                   ],
                 ),
               ),
             ],
             const SizedBox(height: 24),
-            SizedBox(
-              width: double.infinity,
-              child: FilledButton(
-                onPressed: isProcessing || processingError != null
-                    ? null
-                    : onContinue,
-                child: Text(isProcessing ? 'Processing...' : 'View Result'),
-              ),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: isProcessing ? null : onBackToScanning,
+                    child: const Text('Back To Scanning'),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: FilledButton(
+                    onPressed: isProcessing || processingError != null
+                        ? null
+                        : onContinue,
+                    child: Text(
+                      isProcessing ? 'Comparing...' : 'Compare With Answer Key',
+                    ),
+                  ),
+                ),
+              ],
             ),
             if (processingError != null) ...[
               const SizedBox(height: 12),
@@ -2490,8 +2810,8 @@ class _AssessmentKeyPreviewPanel extends StatelessWidget {
             style: Theme.of(context).textTheme.titleMedium,
           ),
           const SizedBox(height: 10),
-          ...assessmentKey.questions.map(
-            (question) => Padding(
+          ..._answerKeyPreviewRows.asMap().entries.map(
+            (entry) => Padding(
               padding: const EdgeInsets.only(bottom: 8),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -2504,22 +2824,17 @@ class _AssessmentKeyPreviewPanel extends StatelessWidget {
                       color: const Color(0xFFDBEAFE),
                       borderRadius: BorderRadius.circular(10),
                     ),
-                    child: Text('${question.resolvedNumber(1)}'),
+                    child: Text('${entry.key + 1}'),
                   ),
                   const SizedBox(width: 10),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(question.resolvedType.label),
+                        Text(entry.value.type.label),
                         const SizedBox(height: 2),
                         Text(
-                          question.resolvedDescription,
-                          style: Theme.of(context).textTheme.bodySmall,
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          'Ans: ${question.resolvedAnswer} | ${question.resolvedMarks.toStringAsFixed(0)} marks',
+                          entry.value.description,
                           style: Theme.of(context).textTheme.bodySmall,
                         ),
                       ],
@@ -2556,11 +2871,15 @@ class _AnswerKeyEditorSheetV2State extends State<_AnswerKeyEditorSheetV2> {
   @override
   void initState() {
     super.initState();
-    _questions = widget.initialKey.questions
-        .asMap()
-        .entries
-        .map((entry) => entry.value.normalized(fallbackNumber: entry.key + 1))
-        .toList();
+    final initialQuestions = widget.initialKey.questions.isEmpty
+        ? _buildQuestionList(count: 5)
+        : widget.initialKey.questions;
+    _questions = _sanitizeAssessmentKey(
+      AssessmentKey(
+        assessmentType: widget.assessmentType,
+        questions: initialQuestions,
+      ),
+    ).questions;
     _questionCountController = TextEditingController(
       text: _questions.length.toString(),
     );
@@ -2575,24 +2894,20 @@ class _AnswerKeyEditorSheetV2State extends State<_AnswerKeyEditorSheetV2> {
   void _updateQuestionCount(int count) {
     setState(() {
       _questionCountController.text = count.toString();
-      if (_questions.length < count) {
-        final start = _questions.length;
-        _questions = [
-          ..._questions,
-          ...List.generate(
-            count - start,
-            (index) => QuestionKeyItem(
-              number: start + index + 1,
-              type: QuestionType.multipleChoice,
-              description: 'Choose the correct option from A, B, C, or D.',
-              correctAnswer: '',
-              marks: 1,
-            ),
-          ),
-        ];
-      } else {
-        _questions = _questions.take(count).toList();
-      }
+      final nextQuestions = List<QuestionKeyItem>.generate(count, (index) {
+        if (index < _questions.length) {
+          return _questions[index];
+        }
+
+        return _buildQuestionList(count: count)[index];
+      });
+
+      _questions = _sanitizeAssessmentKey(
+        AssessmentKey(
+          assessmentType: widget.assessmentType,
+          questions: nextQuestions,
+        ),
+      ).questions;
     });
   }
 
@@ -2637,6 +2952,7 @@ class _AnswerKeyEditorSheetV2State extends State<_AnswerKeyEditorSheetV2> {
                 (entry) => Padding(
                   padding: const EdgeInsets.only(bottom: 14),
                   child: _QuestionEditorCardV2(
+                    key: ValueKey('question-editor-${entry.value.resolvedNumber(1)}'),
                     item: entry.value,
                     onTypeChanged: (type) {
                       setState(() {
@@ -2667,9 +2983,11 @@ class _AnswerKeyEditorSheetV2State extends State<_AnswerKeyEditorSheetV2> {
                 child: FilledButton(
                   onPressed: () {
                     Navigator.of(context).pop(
-                      AssessmentKey(
-                        assessmentType: widget.assessmentType,
-                        questions: _questions,
+                      _sanitizeAssessmentKey(
+                        AssessmentKey(
+                          assessmentType: widget.assessmentType,
+                          questions: _questions,
+                        ),
                       ),
                     );
                   },
@@ -2684,8 +3002,9 @@ class _AnswerKeyEditorSheetV2State extends State<_AnswerKeyEditorSheetV2> {
   }
 }
 
-class _QuestionEditorCardV2 extends StatelessWidget {
+class _QuestionEditorCardV2 extends StatefulWidget {
   const _QuestionEditorCardV2({
+    super.key,
     required this.item,
     required this.onTypeChanged,
     required this.onAnswerChanged,
@@ -2696,6 +3015,46 @@ class _QuestionEditorCardV2 extends StatelessWidget {
   final ValueChanged<QuestionType> onTypeChanged;
   final ValueChanged<String> onAnswerChanged;
   final ValueChanged<String> onMarksChanged;
+
+  @override
+  State<_QuestionEditorCardV2> createState() => _QuestionEditorCardV2State();
+}
+
+class _QuestionEditorCardV2State extends State<_QuestionEditorCardV2> {
+  late final TextEditingController _answerController;
+  late final TextEditingController _marksController;
+
+  @override
+  void initState() {
+    super.initState();
+    _answerController = TextEditingController(text: widget.item.resolvedAnswer);
+    _marksController = TextEditingController(
+      text: widget.item.resolvedMarks.toStringAsFixed(0),
+    );
+  }
+
+  @override
+  void didUpdateWidget(covariant _QuestionEditorCardV2 oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    if (oldWidget.item.resolvedAnswer != widget.item.resolvedAnswer &&
+        _answerController.text != widget.item.resolvedAnswer) {
+      _answerController.text = widget.item.resolvedAnswer;
+    }
+
+    final marksText = widget.item.resolvedMarks.toStringAsFixed(0);
+    if (oldWidget.item.resolvedMarks != widget.item.resolvedMarks &&
+        _marksController.text != marksText) {
+      _marksController.text = marksText;
+    }
+  }
+
+  @override
+  void dispose() {
+    _answerController.dispose();
+    _marksController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -2710,12 +3069,12 @@ class _QuestionEditorCardV2 extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'Question ${item.resolvedNumber(1)}',
+            'Question ${widget.item.resolvedNumber(1)}',
             style: Theme.of(context).textTheme.titleMedium,
           ),
           const SizedBox(height: 12),
           DropdownButtonFormField<QuestionType>(
-            value: item.resolvedType,
+            value: widget.item.resolvedType,
             decoration: const InputDecoration(
               labelText: 'Question Type',
               border: OutlineInputBorder(),
@@ -2727,27 +3086,28 @@ class _QuestionEditorCardV2 extends StatelessWidget {
                 )
                 .toList(),
             onChanged: (value) {
-              if (value != null) onTypeChanged(value);
+              if (value != null) widget.onTypeChanged(value);
             },
           ),
           const SizedBox(height: 12),
           TextFormField(
-            initialValue: item.resolvedAnswer,
+            controller: _answerController,
             decoration: InputDecoration(
-              labelText: _answerHintForType(item.resolvedType),
+              labelText: _answerHintForType(widget.item.resolvedType),
+              hintText: 'Teacher sets the correct answer here',
               border: const OutlineInputBorder(),
             ),
-            onChanged: onAnswerChanged,
+            onChanged: widget.onAnswerChanged,
           ),
           const SizedBox(height: 12),
           TextFormField(
-            initialValue: item.resolvedMarks.toStringAsFixed(0),
+            controller: _marksController,
             keyboardType: const TextInputType.numberWithOptions(decimal: true),
             decoration: const InputDecoration(
               labelText: 'Marks',
               border: OutlineInputBorder(),
             ),
-            onChanged: onMarksChanged,
+            onChanged: widget.onMarksChanged,
           ),
         ],
       ),
