@@ -1,13 +1,95 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+
+import '../../../../auth/data/firestore_login_service.dart';
 
 class DashboardScreen extends StatelessWidget {
   const DashboardScreen({
     super.key,
+    required this.teacher,
     required this.onOpenScan,
     required this.onOpenStudents,
     required this.onOpenAnalytics,
   });
 
+  final AppUser teacher;
+  final VoidCallback onOpenScan;
+  final VoidCallback onOpenStudents;
+  final VoidCallback onOpenAnalytics;
+
+  @override
+  Widget build(BuildContext context) {
+    final teacherDocStream = FirebaseFirestore.instance
+        .collection('teachers')
+        .doc(teacher.id)
+        .snapshots();
+
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: teacherDocStream,
+      builder: (context, teacherSnapshot) {
+        final teacherData = teacherSnapshot.data?.data() ?? <String, dynamic>{};
+        final teacherProfile = _TeacherProfile.fromFirestore(
+          teacher,
+          teacherData,
+        );
+
+        final studentsStream = FirebaseFirestore.instance
+            .collection('students')
+            .where(
+              'classAssigned',
+              isEqualTo: teacherProfile.classAssigned,
+            )
+            .snapshots();
+
+        return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+          stream: studentsStream,
+          builder: (context, studentsSnapshot) {
+            final studentDocs =
+                studentsSnapshot.data?.docs ??
+                <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+            final matchedStudents = studentDocs
+                .where(
+                  (doc) => teacherProfile.matchesSection(
+                    doc.data()['section']?.toString() ??
+                        doc.data()['sectionAssigned']?.toString(),
+                  ),
+                )
+                .toList();
+            final dashboardData = _DashboardData.fromFirestore(
+              teacherProfile: teacherProfile,
+              students: matchedStudents,
+            );
+
+            return _DashboardContent(
+              teacherProfile: teacherProfile,
+              dashboardData: dashboardData,
+              isLoading:
+                  teacherSnapshot.connectionState == ConnectionState.waiting ||
+                  studentsSnapshot.connectionState == ConnectionState.waiting,
+              onOpenScan: onOpenScan,
+              onOpenStudents: onOpenStudents,
+              onOpenAnalytics: onOpenAnalytics,
+            );
+          },
+        );
+      },
+    );
+  }
+}
+
+class _DashboardContent extends StatelessWidget {
+  const _DashboardContent({
+    required this.teacherProfile,
+    required this.dashboardData,
+    required this.isLoading,
+    required this.onOpenScan,
+    required this.onOpenStudents,
+    required this.onOpenAnalytics,
+  });
+
+  final _TeacherProfile teacherProfile;
+  final _DashboardData dashboardData;
+  final bool isLoading;
   final VoidCallback onOpenScan;
   final VoidCallback onOpenStudents;
   final VoidCallback onOpenAnalytics;
@@ -40,7 +122,7 @@ class DashboardScreen extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Welcome back, Mr. Daniel',
+                  'Welcome back, ${teacherProfile.displayName}',
                   style: theme.textTheme.headlineMedium?.copyWith(
                     color: Colors.white,
                     height: 1.15,
@@ -48,7 +130,7 @@ class DashboardScreen extends StatelessWidget {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Green Valley Secondary School',
+                  teacherProfile.heroSubtitle,
                   style: theme.textTheme.titleMedium?.copyWith(
                     color: Colors.white.withValues(alpha: 0.88),
                   ),
@@ -64,13 +146,18 @@ class DashboardScreen extends StatelessWidget {
                     borderRadius: BorderRadius.circular(20),
                   ),
                   child: Row(
-                    children: const [
-                      Icon(Icons.cloud_done_outlined, color: Colors.white),
-                      SizedBox(width: 12),
+                    children: [
+                      const Icon(
+                        Icons.cloud_done_outlined,
+                        color: Colors.white,
+                      ),
+                      const SizedBox(width: 12),
                       Expanded(
                         child: Text(
-                          'All grading data synced 12 minutes ago',
-                          style: TextStyle(
+                          isLoading
+                              ? 'Syncing teacher and student dashboard data...'
+                              : dashboardData.syncMessage,
+                          style: const TextStyle(
                             color: Colors.white,
                             fontWeight: FontWeight.w600,
                           ),
@@ -121,37 +208,270 @@ class DashboardScreen extends StatelessWidget {
           const SizedBox(height: 24),
           Text('Recent Activity', style: theme.textTheme.titleLarge),
           const SizedBox(height: 14),
-          const _InfoCard(
-            icon: Icons.history,
-            title: 'Last graded class',
-            subtitle: 'Grade 8B Mathematics quiz marked today at 11:40 AM',
+          ...dashboardData.recentActivities.map(
+            (item) => Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: _InfoCard(
+                icon: item.icon,
+                title: item.title,
+                subtitle: item.subtitle,
+              ),
+            ),
           ),
           const SizedBox(height: 12),
-          const _InfoCard(
-            icon: Icons.sync,
-            title: 'Last sync status',
-            subtitle: 'Cloud backup completed successfully for 124 scripts',
-          ),
-          const SizedBox(height: 24),
           Text('Class Summary Cards', style: theme.textTheme.titleLarge),
           const SizedBox(height: 14),
-          const _ClassSummaryCard(
-            className: 'Grade 7A',
-            average: 65,
-            submissions: 38,
-            accent: Color(0xFF0F766E),
-          ),
-          const SizedBox(height: 12),
-          const _ClassSummaryCard(
-            className: 'Grade 8B',
-            average: 72,
-            submissions: 41,
-            accent: Color(0xFF1D4ED8),
-          ),
+          if (dashboardData.classSummaries.isEmpty)
+            const _InfoCard(
+              icon: Icons.info_outline,
+              title: 'No class summary data',
+              subtitle:
+                  'No student documents currently match this teacher assignment in Firestore.',
+            )
+          else
+            ...dashboardData.classSummaries.map(
+              (summary) => Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: _ClassSummaryCard(summary: summary),
+              ),
+            ),
         ],
       ),
     );
   }
+}
+
+class _TeacherProfile {
+  const _TeacherProfile({
+    required this.id,
+    required this.displayName,
+    required this.classAssigned,
+    required this.sections,
+    required this.subjects,
+    required this.status,
+  });
+
+  final String id;
+  final String displayName;
+  final String classAssigned;
+  final List<String> sections;
+  final List<String> subjects;
+  final String status;
+
+  factory _TeacherProfile.fromFirestore(
+    AppUser teacher,
+    Map<String, dynamic> data,
+  ) {
+    final firstName = data['firstName']?.toString().trim();
+    final lastName = data['lastName']?.toString().trim();
+    final fullName = [firstName, lastName]
+        .whereType<String>()
+        .where((value) => value.isNotEmpty)
+        .join(' ');
+
+    return _TeacherProfile(
+      id: teacher.id,
+      displayName: fullName.isNotEmpty ? fullName : teacher.displayName,
+      classAssigned: data['classAssigned']?.toString().trim() ?? 'Class not set',
+      sections: (data['sections'] as List? ?? const [])
+          .map((value) => value.toString().trim())
+          .where((value) => value.isNotEmpty)
+          .toList(),
+      subjects: (data['subjects'] as List? ?? const [])
+          .map((value) => value.toString().trim())
+          .where((value) => value.isNotEmpty)
+          .toList(),
+      status: data['status']?.toString().trim() ?? 'unknown',
+    );
+  }
+
+  String get heroSubtitle {
+    final subjectLabel = subjects.isEmpty ? 'No subject assigned' : subjects.join(', ');
+    final sectionLabel = sections.isEmpty ? 'All sections' : sections.join(', ');
+    return '$classAssigned | Sections $sectionLabel | $subjectLabel';
+  }
+
+  bool matchesSection(String? value) {
+    if (sections.isEmpty) {
+      return true;
+    }
+
+    final normalizedValue = value?.trim().toLowerCase();
+    if (normalizedValue == null || normalizedValue.isEmpty) {
+      return false;
+    }
+
+    return sections.any((section) => section.toLowerCase() == normalizedValue);
+  }
+}
+
+class _DashboardData {
+  const _DashboardData({
+    required this.syncMessage,
+    required this.recentActivities,
+    required this.classSummaries,
+  });
+
+  final String syncMessage;
+  final List<_ActivityItem> recentActivities;
+  final List<_ClassSummaryData> classSummaries;
+
+  factory _DashboardData.fromFirestore({
+    required _TeacherProfile teacherProfile,
+    required List<QueryDocumentSnapshot<Map<String, dynamic>>> students,
+  }) {
+    final totalStudents = students.length;
+    final activeStudents = students.where((doc) {
+      final status = doc.data()['status']?.toString().trim().toLowerCase();
+      return status == null || status.isEmpty || status == 'active';
+    }).length;
+
+    final summaries = _buildClassSummaries(students);
+    final sectionLabel = teacherProfile.sections.isEmpty
+        ? 'all sections'
+        : teacherProfile.sections.join(', ');
+    final subjectLabel = teacherProfile.subjects.isEmpty
+        ? 'assigned subjects not listed'
+        : teacherProfile.subjects.join(', ');
+
+    return _DashboardData(
+      syncMessage:
+          '$activeStudents active students loaded from Firestore for ${teacherProfile.classAssigned}.',
+      recentActivities: [
+        _ActivityItem(
+          icon: Icons.person_outline_rounded,
+          title: 'Current teacher profile',
+          subtitle:
+              '${teacherProfile.displayName} is marked ${teacherProfile.status} and assigned to ${teacherProfile.classAssigned}.',
+        ),
+        _ActivityItem(
+          icon: Icons.menu_book_rounded,
+          title: 'Assigned teaching load',
+          subtitle:
+              'Teaching $subjectLabel across $sectionLabel in ${teacherProfile.classAssigned}.',
+        ),
+        _ActivityItem(
+          icon: Icons.groups_rounded,
+          title: 'Live student roster',
+          subtitle:
+              '$totalStudents students matched this teacher assignment, with $activeStudents currently active.',
+        ),
+      ],
+      classSummaries: summaries,
+    );
+  }
+
+  static List<_ClassSummaryData> _buildClassSummaries(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> students,
+  ) {
+    final grouped = <String, List<QueryDocumentSnapshot<Map<String, dynamic>>>>{};
+    for (final doc in students) {
+      final data = doc.data();
+      final className =
+          data['classAssigned']?.toString().trim() ??
+          data['class']?.toString().trim() ??
+          'Unassigned class';
+      final section =
+          data['section']?.toString().trim() ??
+          data['sectionAssigned']?.toString().trim() ??
+          'Unknown section';
+      final key = '$className|$section';
+      grouped.putIfAbsent(key, () => []).add(doc);
+    }
+
+    const accents = [
+      Color(0xFF0F766E),
+      Color(0xFF1D4ED8),
+      Color(0xFFEA580C),
+      Color(0xFF7C3AED),
+    ];
+
+    final summaries = <_ClassSummaryData>[];
+    var colorIndex = 0;
+
+    for (final entry in grouped.entries) {
+      final items = entry.value;
+      final first = items.first.data();
+      final className =
+          first['classAssigned']?.toString().trim() ??
+          first['class']?.toString().trim() ??
+          'Unassigned class';
+      final section =
+          first['section']?.toString().trim() ??
+          first['sectionAssigned']?.toString().trim() ??
+          'Unknown section';
+      final scores = items
+          .map((doc) => _extractScore(doc.data()))
+          .whereType<double>()
+          .toList();
+      final averageScore = scores.isEmpty
+          ? null
+          : scores.reduce((a, b) => a + b) / scores.length;
+
+      summaries.add(
+        _ClassSummaryData(
+          className: '$className $section',
+          studentCount: items.length,
+          averageScore: averageScore,
+          accent: accents[colorIndex % accents.length],
+        ),
+      );
+      colorIndex++;
+    }
+
+    summaries.sort((a, b) => a.className.compareTo(b.className));
+    return summaries;
+  }
+
+  static double? _extractScore(Map<String, dynamic> data) {
+    const scoreFields = [
+      'averageScore',
+      'score',
+      'resultAverage',
+      'totalScore',
+      'teacherAdjustedScore',
+    ];
+
+    for (final field in scoreFields) {
+      final rawValue = data[field];
+      if (rawValue is num) {
+        return rawValue.toDouble();
+      }
+
+      final parsedValue = double.tryParse(rawValue?.toString() ?? '');
+      if (parsedValue != null) {
+        return parsedValue;
+      }
+    }
+
+    return null;
+  }
+}
+
+class _ActivityItem {
+  const _ActivityItem({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+}
+
+class _ClassSummaryData {
+  const _ClassSummaryData({
+    required this.className,
+    required this.studentCount,
+    required this.averageScore,
+    required this.accent,
+  });
+
+  final String className;
+  final int studentCount;
+  final double? averageScore;
+  final Color accent;
 }
 
 class _QuickActionCard extends StatelessWidget {
@@ -253,21 +573,17 @@ class _InfoCard extends StatelessWidget {
 }
 
 class _ClassSummaryCard extends StatelessWidget {
-  const _ClassSummaryCard({
-    required this.className,
-    required this.average,
-    required this.submissions,
-    required this.accent,
-  });
+  const _ClassSummaryCard({required this.summary});
 
-  final String className;
-  final int average;
-  final int submissions;
-  final Color accent;
+  final _ClassSummaryData summary;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final average = summary.averageScore;
+    final normalizedAverage = average == null
+        ? 0.0
+        : (average.clamp(0, 100) / 100).toDouble();
 
     return Card(
       child: Padding(
@@ -281,16 +597,20 @@ class _ClassSummaryCard extends StatelessWidget {
                   height: 12,
                   width: 12,
                   decoration: BoxDecoration(
-                    color: accent,
+                    color: summary.accent,
                     shape: BoxShape.circle,
                   ),
                 ),
                 const SizedBox(width: 10),
-                Text(className, style: theme.textTheme.titleMedium),
+                Text(summary.className, style: theme.textTheme.titleMedium),
                 const Spacer(),
                 Text(
-                  'Avg: $average%',
-                  style: theme.textTheme.titleMedium?.copyWith(color: accent),
+                  average == null
+                      ? 'Avg: N/A'
+                      : 'Avg: ${average.toStringAsFixed(0)}%',
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    color: summary.accent,
+                  ),
                 ),
               ],
             ),
@@ -298,15 +618,17 @@ class _ClassSummaryCard extends StatelessWidget {
             ClipRRect(
               borderRadius: BorderRadius.circular(999),
               child: LinearProgressIndicator(
-                value: average / 100,
+                value: normalizedAverage,
                 minHeight: 10,
                 backgroundColor: const Color(0xFFE2E8F0),
-                valueColor: AlwaysStoppedAnimation<Color>(accent),
+                valueColor: AlwaysStoppedAnimation<Color>(summary.accent),
               ),
             ),
             const SizedBox(height: 12),
             Text(
-              '$submissions papers graded in the latest assessment',
+              average == null
+                  ? '${summary.studentCount} students found in Firestore. No score field is stored yet for average calculation.'
+                  : '${summary.studentCount} students included in this Firestore class summary.',
               style: theme.textTheme.bodyMedium,
             ),
           ],

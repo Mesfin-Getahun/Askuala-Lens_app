@@ -35,7 +35,14 @@ class StudentLearningRecord {
 }
 
 class StudentMainShell extends StatefulWidget {
-  const StudentMainShell({super.key});
+  const StudentMainShell({
+    super.key,
+    required this.studentName,
+    this.classSection,
+  });
+
+  final String studentName;
+  final String? classSection;
 
   @override
   State<StudentMainShell> createState() => _StudentMainShellState();
@@ -107,8 +114,8 @@ class _StudentMainShellState extends State<StudentMainShell> {
   Widget build(BuildContext context) {
     final screens = <Widget>[
       StudentHomeScreen(
-        studentName: 'Bethel Alemu',
-        classSection: 'Grade 7 - Section B',
+        studentName: widget.studentName,
+        classSection: widget.classSection ?? 'Class section not assigned',
         learningHistory: _history,
         onOpenScan: () => _selectTab(1),
         onOpenChat: () => _selectTab(3),

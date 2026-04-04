@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../../../auth/data/firestore_login_service.dart';
 import '../../analytics/presentation/analytics_screen.dart';
 import '../../dashboard/presentation/dashboard_screen.dart';
 import '../../profile/presentation/profile_screen.dart';
@@ -7,7 +8,9 @@ import '../../scan/presentation/scan_flow_screen.dart';
 import '../../students/presentation/students_screen.dart';
 
 class MainShell extends StatefulWidget {
-  const MainShell({super.key});
+  const MainShell({super.key, required this.teacher});
+
+  final AppUser teacher;
 
   @override
   State<MainShell> createState() => _MainShellState();
@@ -26,12 +29,13 @@ class _MainShellState extends State<MainShell> {
   Widget build(BuildContext context) {
     final screens = <Widget>[
       DashboardScreen(
+        teacher: widget.teacher,
         onOpenScan: () => _selectTab(1),
         onOpenStudents: () => _selectTab(2),
         onOpenAnalytics: () => _selectTab(3),
       ),
       const ScanFlowScreen(),
-      const StudentsScreen(),
+      StudentsScreen(teacher: widget.teacher),
       const AnalyticsScreen(),
       const ProfileScreen(),
     ];

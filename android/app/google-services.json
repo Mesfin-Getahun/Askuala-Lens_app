@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "1018262910042",
+    "project_id": "askula-lens",
+    "storage_bucket": "askula-lens.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1018262910042:android:8a856b57973b0501c1d463",
+        "android_client_info": {
+          "package_name": "com.example.askula"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDzUcVNDLybPkMBgWqgtP6f-nWkIZ5h0eU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

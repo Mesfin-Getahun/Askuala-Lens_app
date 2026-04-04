@@ -10,6 +10,49 @@ class StudentRecord {
     required this.feedbackHistory,
   });
 
+  factory StudentRecord.fromFirestore(Map<String, dynamic> data) {
+    final firstName = data['firstName']?.toString().trim();
+    final lastName = data['lastName']?.toString().trim();
+    final fullName = [firstName, lastName]
+        .whereType<String>()
+        .where((value) => value.isNotEmpty)
+        .join(' ');
+
+    final feedbackItems = (data['feedbackHistory'] as List? ?? const [])
+        .whereType<Map>()
+        .map(
+          (item) => FeedbackEntry(
+            title: item['title']?.toString() ?? 'Feedback',
+            comment: item['comment']?.toString() ?? '',
+            dateLabel: item['dateLabel']?.toString() ?? 'Recent',
+          ),
+        )
+        .toList();
+
+    return StudentRecord(
+      name:
+          fullName.isNotEmpty
+              ? fullName
+              : data['displayName']?.toString() ??
+                    data['name']?.toString() ??
+                    data['username']?.toString() ??
+                    'Student',
+      className:
+          data['classAssigned']?.toString() ??
+          data['class']?.toString() ??
+          'Unassigned',
+      section:
+          data['section']?.toString() ??
+          data['sectionAssigned']?.toString() ??
+          'Unknown',
+      quiz: _readScore(data, ['quiz', 'quizScore']),
+      mid: _readScore(data, ['mid', 'midScore', 'midExam']),
+      assignment: _readScore(data, ['assignment', 'assignmentScore']),
+      finalExam: _readScore(data, ['finalExam', 'final', 'finalScore']),
+      feedbackHistory: feedbackItems,
+    );
+  }
+
   final String name;
   final String className;
   final String section;
@@ -30,6 +73,22 @@ class StudentRecord {
   }
 
   String get classLabel => '$className$section';
+
+  static int _readScore(Map<String, dynamic> data, List<String> keys) {
+    for (final key in keys) {
+      final rawValue = data[key];
+      if (rawValue is num) {
+        return rawValue.round();
+      }
+
+      final parsedValue = int.tryParse(rawValue?.toString() ?? '');
+      if (parsedValue != null) {
+        return parsedValue;
+      }
+    }
+
+    return 0;
+  }
 }
 
 class FeedbackEntry {
