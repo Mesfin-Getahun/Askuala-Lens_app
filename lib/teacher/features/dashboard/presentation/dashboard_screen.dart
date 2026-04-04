@@ -513,6 +513,7 @@ class _QuickActionCard extends StatelessWidget {
           padding: const EdgeInsets.all(16),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
             children: [
               Container(
                 height: 48,
@@ -523,10 +524,20 @@ class _QuickActionCard extends StatelessWidget {
                 ),
                 child: Icon(icon, color: accent),
               ),
-              const SizedBox(height: 18),
-              Text(title, style: theme.textTheme.titleMedium),
+              const SizedBox(height: 12),
+              Text(
+                title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.titleMedium,
+              ),
               const SizedBox(height: 6),
-              Text(subtitle, style: theme.textTheme.bodyMedium),
+              Text(
+                subtitle,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodyMedium,
+              ),
             ],
           ),
         ),

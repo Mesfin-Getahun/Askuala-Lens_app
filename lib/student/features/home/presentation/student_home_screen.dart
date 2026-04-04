@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../../navigation/presentation/student_main_shell.dart';
+import '../../shared/domain/student_learning_record.dart';
 
 class StudentHomeScreen extends StatelessWidget {
   const StudentHomeScreen({
@@ -11,6 +11,7 @@ class StudentHomeScreen extends StatelessWidget {
     required this.onOpenScan,
     required this.onOpenChat,
     required this.onOpenLearning,
+    required this.onOpenAssessments,
   });
 
   final String studentName;
@@ -19,6 +20,7 @@ class StudentHomeScreen extends StatelessWidget {
   final VoidCallback onOpenScan;
   final VoidCallback onOpenChat;
   final VoidCallback onOpenLearning;
+  final VoidCallback onOpenAssessments;
 
   @override
   Widget build(BuildContext context) {
@@ -37,39 +39,41 @@ class StudentHomeScreen extends StatelessWidget {
             const SizedBox(height: 20),
             Text('Quick Actions', style: Theme.of(context).textTheme.titleLarge),
             const SizedBox(height: 12),
-            Wrap(
-              spacing: 12,
-              runSpacing: 12,
+            GridView.count(
+              crossAxisCount: 2,
+              crossAxisSpacing: 12,
+              mainAxisSpacing: 12,
+              childAspectRatio: 0.82,
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
               children: [
-                SizedBox(
-                  width: 220,
-                  child: _QuickActionCard(
-                    title: 'Scan & Explain',
-                    subtitle: 'Capture a question and get help fast.',
-                    icon: Icons.document_scanner_rounded,
-                    accent: const Color(0xFF0F766E),
-                    onTap: onOpenScan,
-                  ),
+                _QuickActionCard(
+                  title: 'Scan & Explain',
+                  subtitle: 'Capture a question and get help fast.',
+                  icon: Icons.document_scanner_rounded,
+                  accent: const Color(0xFF0F766E),
+                  onTap: onOpenScan,
                 ),
-                SizedBox(
-                  width: 220,
-                  child: _QuickActionCard(
-                    title: 'Ask Question',
-                    subtitle: 'Chat with the tutor for follow-up help.',
-                    icon: Icons.chat_bubble_rounded,
-                    accent: const Color(0xFF2563EB),
-                    onTap: onOpenChat,
-                  ),
+                _QuickActionCard(
+                  title: 'Ask Question',
+                  subtitle: 'Chat with the tutor for follow-up help.',
+                  icon: Icons.chat_bubble_rounded,
+                  accent: const Color(0xFF2563EB),
+                  onTap: onOpenChat,
                 ),
-                SizedBox(
-                  width: 220,
-                  child: _QuickActionCard(
-                    title: 'My Learning',
-                    subtitle: 'Return to saved lessons and explanations.',
-                    icon: Icons.auto_stories_rounded,
-                    accent: const Color(0xFFEA580C),
-                    onTap: onOpenLearning,
-                  ),
+                _QuickActionCard(
+                  title: 'My Learning',
+                  subtitle: 'Return to saved lessons and explanations.',
+                  icon: Icons.auto_stories_rounded,
+                  accent: const Color(0xFFEA580C),
+                  onTap: onOpenLearning,
+                ),
+                _QuickActionCard(
+                  title: 'View Class Assessments',
+                  subtitle: 'See quizzes, mid exams, assignments, and finals.',
+                  icon: Icons.fact_check_rounded,
+                  accent: const Color(0xFF7C3AED),
+                  onTap: onOpenAssessments,
                 ),
               ],
             ),
@@ -193,7 +197,7 @@ class _QuickActionCard extends StatelessWidget {
       borderRadius: BorderRadius.circular(24),
       onTap: onTap,
       child: Ink(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(14),
         decoration: BoxDecoration(
           color: Colors.white,
           borderRadius: BorderRadius.circular(24),
@@ -203,18 +207,33 @@ class _QuickActionCard extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Container(
-              width: 44,
-              height: 44,
+              width: 40,
+              height: 40,
               decoration: BoxDecoration(
                 color: accent.withValues(alpha: 0.12),
                 borderRadius: BorderRadius.circular(14),
               ),
               child: Icon(icon, color: accent),
             ),
-            const SizedBox(height: 14),
-            Text(title, style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 8),
-            Text(subtitle, style: Theme.of(context).textTheme.bodyMedium),
+            const SizedBox(height: 10),
+            Text(
+              title,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const SizedBox(height: 6),
+            Expanded(
+              child: Text(
+                subtitle,
+                maxLines: 3,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  fontSize: 13,
+                  height: 1.25,
+                ),
+              ),
+            ),
           ],
         ),
       ),

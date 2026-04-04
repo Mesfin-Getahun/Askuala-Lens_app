@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../../navigation/presentation/student_main_shell.dart';
+import '../../shared/domain/student_learning_record.dart';
 
 class StudentLearnScreen extends StatefulWidget {
   const StudentLearnScreen({
@@ -10,7 +10,7 @@ class StudentLearnScreen extends StatefulWidget {
   });
 
   final List<StudentLearningRecord> learningHistory;
-  final ValueChanged<StudentLearningRecord> onDeleteRecord;
+  final Future<void> Function(StudentLearningRecord record) onDeleteRecord;
 
   @override
   State<StudentLearnScreen> createState() => _StudentLearnScreenState();
@@ -209,9 +209,9 @@ class _StudentLearnScreenState extends State<StudentLearnScreen> {
                                     label: const Text('Change language'),
                                   ),
                                   FilledButton.icon(
-                                    onPressed: () {
+                                    onPressed: () async {
                                       Navigator.of(context).pop();
-                                      widget.onDeleteRecord(item);
+                                      await widget.onDeleteRecord(item);
                                     },
                                     style: FilledButton.styleFrom(
                                       backgroundColor: const Color(0xFFDC2626),

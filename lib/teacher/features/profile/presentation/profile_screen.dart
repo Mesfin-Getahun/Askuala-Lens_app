@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
+import '../../../../auth/login_screen.dart';
 import '../../../../auth/data/firestore_login_service.dart';
 
 class ProfileScreen extends StatefulWidget {
@@ -335,9 +336,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   style: OutlinedButton.styleFrom(
                     foregroundColor: const Color(0xFFDC2626),
                   ),
-                  onPressed: () => _showInfo(
-                    'Logout flow can be connected next to your auth/session handling.',
-                  ),
+                  onPressed: () {
+                    Navigator.of(context).pushAndRemoveUntil(
+                      MaterialPageRoute<void>(
+                        builder: (_) => const LoginScreen(),
+                      ),
+                      (route) => false,
+                    );
+                  },
                   icon: const Icon(Icons.logout),
                   label: const Text('Log Out'),
                 ),

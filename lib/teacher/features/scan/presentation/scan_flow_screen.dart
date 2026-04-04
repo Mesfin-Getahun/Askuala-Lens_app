@@ -294,6 +294,42 @@ class ScanEvaluation {
   }
 }
 
+class _ResolvedStudentInfo {
+  const _ResolvedStudentInfo({
+    required this.documentId,
+    required this.studentId,
+    required this.displayName,
+    required this.classLabel,
+    required this.quiz,
+    required this.mid,
+    required this.assignment,
+    required this.finalExam,
+  });
+
+  final String? documentId;
+  final String studentId;
+  final String displayName;
+  final String classLabel;
+  final int quiz;
+  final int mid;
+  final int assignment;
+  final int finalExam;
+}
+
+const List<String> _studentLookupFields = [
+  'studentId',
+  'student_id',
+  'admissionNo',
+  'admissionNumber',
+  'admission_no',
+  'username',
+  'userName',
+  'registrationNo',
+  'regNo',
+  'rollNo',
+  'indexNo',
+];
+
 AssessmentKey _assessmentKeyFromMap(Map<String, dynamic> data) {
   final storedQuestions = (data['questions'] as List? ?? const [])
       .whereType<Map>()
@@ -348,6 +384,10 @@ String _normalizeForComparison(String value) {
   return value.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '');
 }
 
+String _normalizeStudentLookupValue(String value) {
+  return value.trim().toLowerCase();
+}
+
 String _extractAnswerForQuestion(String ocrText, int questionNumber) {
   final questionPrefix = RegExp(
     '^(?:q(?:uestion)?\\s*)?$questionNumber[\\)\\.\\:\\-\\s]+',
@@ -384,6 +424,54 @@ String _extractAnswerForQuestion(String ocrText, int questionNumber) {
   }
 
   return '';
+}
+
+String? _extractStudentIdFromText(String text) {
+  final lines = text
+      .split('\n')
+      .map((line) => line.trim())
+      .where((line) => line.isNotEmpty)
+      .toList();
+
+  final explicitAssignmentPattern = RegExp(
+    r'(?:student\s*id|studentid)\s*=\s*"([^"]+)"',
+    caseSensitive: false,
+  );
+
+  for (final line in lines) {
+    final explicitMatch = explicitAssignmentPattern.firstMatch(line);
+    if (explicitMatch != null) {
+      final value = explicitMatch.group(1)?.trim();
+      if (value != null && value.isNotEmpty) {
+        return value;
+      }
+    }
+  }
+
+  final labeledPattern = RegExp(
+    r'(?:student\s*id|studentid|admission\s*(?:no|number)?|admissionno|reg(?:istration)?\s*no|roll\s*no|index\s*no)\s*(?:[:#=-]|\s)\s*"?([A-Za-z0-9\/_-]+)"?',
+    caseSensitive: false,
+  );
+
+  for (final line in lines) {
+    final match = labeledPattern.firstMatch(line);
+    if (match != null) {
+      final value = match.group(1)?.trim();
+      if (value != null && value.isNotEmpty) {
+        return value;
+      }
+    }
+  }
+
+  final fallbackPattern = RegExp(r'\b\d{4,}\b');
+  for (final line in lines.take(8)) {
+    final match = fallbackPattern.firstMatch(line);
+    if (match != null) {
+      return match.group(0);
+    }
+  }
+
+  return null;
 }
 
 bool _isAnswerMatch(String expected, String detected) {
@@ -441,6 +529,7 @@ class _ScanFlowScreenState extends State<ScanFlowScreen> {
   double _score = 0;
   late AssessmentKey _assessmentKey;
   ScanEvaluation? _latestEvaluation;
+  _ResolvedStudentInfo? _resolvedStudentInfo;
   bool _isProcessing = false;
   String? _processingError;
   String? _activeSessionId;
@@ -480,6 +569,7 @@ class _ScanFlowScreenState extends State<ScanFlowScreen> {
     _processingError = null;
     _isProcessing = false;
     _latestEvaluation = null;
+    _resolvedStudentInfo = null;
     _combinedExtractedText = '';
     _ocrPreviewController.clear();
     _lastProcessedImagePath = null;
@@ -623,6 +713,7 @@ class _ScanFlowScreenState extends State<ScanFlowScreen> {
   }
 
   String _buildEditableOcrPreview(String rawCombinedOcrText) {
+    final extractedStudentId = _extractStudentIdFromText(rawCombinedOcrText);
     final numberedAnswers = _assessmentKey.questions.asMap().entries.map((entry) {
       final question = entry.value.normalized(fallbackNumber: entry.key + 1);
       final extractedAnswer = _extractAnswerForQuestion(
@@ -633,7 +724,10 @@ class _ScanFlowScreenState extends State<ScanFlowScreen> {
       return '${question.resolvedNumber(entry.key + 1)}. $extractedAnswer'.trimRight();
     }).toList();
 
-    return numberedAnswers.join('\n');
+    return [
+      'studentId = "${extractedStudentId ?? ''}"',
+      ...numberedAnswers,
+    ].join('\n');
   }
 
   Future<void> _processCurrentSession() async {
@@ -716,6 +810,8 @@ class _ScanFlowScreenState extends State<ScanFlowScreen> {
     });
 
     try {
+      final extractedStudentId = _extractStudentIdFromText(editedText);
+      final resolvedStudent = await _findStudentById(extractedStudentId);
       final evaluation = await _evaluateScan(
         sessionId: sessionId,
         combinedOcrText: editedText,
@@ -726,9 +822,10 @@ class _ScanFlowScreenState extends State<ScanFlowScreen> {
       }
 
       setState(() {
+        _resolvedStudentInfo = resolvedStudent;
         _latestEvaluation = evaluation;
         _combinedExtractedText = editedText;
-        _score = evaluation.scorePercent;
+        _score = evaluation.awardedMarks;
         _feedbackController.text = evaluation.feedback;
         _isProcessing = false;
         _currentStep = ScanStep.review;
@@ -742,6 +839,243 @@ class _ScanFlowScreenState extends State<ScanFlowScreen> {
         _processingError = error.toString();
       });
     }
+  }
+
+  Future<_ResolvedStudentInfo?> _findStudentById(String? studentId) async {
+    final normalizedId = studentId?.trim();
+    if (normalizedId == null || normalizedId.isEmpty) {
+      return null;
+    }
+    final matchedDoc = await _findStudentDocumentById(normalizedId);
+    if (matchedDoc != null) {
+      return _mapResolvedStudentInfo(
+        matchedDoc.id,
+        matchedDoc.data() ?? <String, dynamic>{},
+        normalizedId,
+      );
+    }
+
+    return _ResolvedStudentInfo(
+      documentId: null,
+      studentId: normalizedId,
+      displayName: 'Student not found',
+      classLabel: '${_selectedClass}${_selectedSection}',
+      quiz: 0,
+      mid: 0,
+      assignment: 0,
+      finalExam: 0,
+    );
+  }
+
+  Future<DocumentSnapshot<Map<String, dynamic>>?> _findStudentDocumentById(
+    String studentId,
+  ) async {
+    final normalizedId = studentId.trim();
+    final students = FirebaseFirestore.instance.collection('students');
+    final normalizedLookup = _normalizeStudentLookupValue(normalizedId);
+
+    try {
+      final directDoc = await students.doc(normalizedId).get();
+      if (directDoc.exists) {
+        return directDoc;
+      }
+    } on FirebaseException {
+      // Keep trying other lookup paths.
+    } catch (_) {
+      // Keep trying other lookup paths.
+    }
+
+    try {
+      final studentIdSnapshot = await students
+          .where('studentId', isEqualTo: normalizedId)
+          .limit(1)
+          .get();
+      if (studentIdSnapshot.docs.isNotEmpty) {
+        return studentIdSnapshot.docs.first;
+      }
+    } on FirebaseException {
+      // Keep trying other lookup paths.
+    } catch (_) {
+      // Keep trying other lookup paths.
+    }
+
+    for (final field in _studentLookupFields) {
+      try {
+        final snapshot = await students.where(field, isEqualTo: normalizedId).limit(1).get();
+        if (snapshot.docs.isNotEmpty) {
+          return snapshot.docs.first;
+        }
+      } on FirebaseException {
+        // Keep trying the next field.
+      } catch (_) {
+        // Keep trying the next field.
+      }
+    }
+
+    try {
+      final fallbackSnapshot = await students.limit(200).get();
+      for (final doc in fallbackSnapshot.docs) {
+        final data = doc.data();
+        if (_matchesStudentLookup(data, normalizedLookup, doc.id)) {
+          return doc;
+        }
+      }
+    } on FirebaseException {
+      // Fall back to typed studentId below.
+    } catch (_) {
+      // Fall back to typed studentId below.
+    }
+
+    return null;
+  }
+
+  String _studentScoreFieldForAssessmentType(String assessmentType) {
+    return switch (assessmentType.trim().toLowerCase()) {
+      'quiz' => 'quiz',
+      'mid' => 'mid',
+      'assignment' => 'assignment',
+      'final' => 'finalExam',
+      _ => 'quiz',
+    };
+  }
+
+  int _readStudentScore(Map<String, dynamic> data, String key) {
+    final rawValue = data[key];
+    if (rawValue is num) {
+      return rawValue.round();
+    }
+
+    return int.tryParse(rawValue?.toString() ?? '') ?? 0;
+  }
+
+  String _gradeForTotal(int total) {
+    if (total >= 80) return 'A';
+    if (total >= 70) return 'B';
+    if (total >= 60) return 'C';
+    if (total >= 50) return 'D';
+    return 'F';
+  }
+
+  Future<void> _saveStudentScoreToFirestore() async {
+    final resolvedStudent = _resolvedStudentInfo;
+    if (resolvedStudent == null) {
+      throw StateError('No student was resolved from the OCR preview.');
+    }
+    if (resolvedStudent.documentId == null ||
+        resolvedStudent.documentId!.trim().isEmpty) {
+      throw StateError(
+        'Student ${resolvedStudent.studentId} was not resolved to a Firestore document.',
+      );
+    }
+
+    final scoreField = _studentScoreFieldForAssessmentType(_assessmentType);
+    final scoreValue = _score.round();
+    final quiz = scoreField == 'quiz'
+        ? scoreValue
+        : resolvedStudent.quiz;
+    final mid = scoreField == 'mid' ? scoreValue : resolvedStudent.mid;
+    final assignment = scoreField == 'assignment'
+        ? scoreValue
+        : resolvedStudent.assignment;
+    final finalExam = scoreField == 'finalExam'
+        ? scoreValue
+        : resolvedStudent.finalExam;
+    final total = quiz + mid + assignment + finalExam;
+
+    await FirebaseFirestore.instance
+        .collection('students')
+        .doc(resolvedStudent.documentId)
+        .set({
+      scoreField: scoreValue,
+      'quiz': quiz,
+      'mid': mid,
+      'assignment': assignment,
+      'finalExam': finalExam,
+      'total': total,
+      'grade': _gradeForTotal(total),
+      'lastAssessmentType': _assessmentType,
+      'lastScannedScore': scoreValue,
+      'lastUpdatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
+
+  bool _matchesStudentLookup(
+    Map<String, dynamic> data,
+    String normalizedLookup,
+    String documentId,
+  ) {
+    if (_normalizeStudentLookupValue(documentId) == normalizedLookup) {
+      return true;
+    }
+
+    for (final field in _studentLookupFields) {
+      final value = data[field]?.toString();
+      if (value != null &&
+          _normalizeStudentLookupValue(value) == normalizedLookup) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  _ResolvedStudentInfo _mapResolvedStudentInfo(
+    String documentId,
+    Map<String, dynamic> data,
+    String fallbackId,
+  ) {
+    final firstName = data['firstName']?.toString().trim();
+    final lastName = data['lastName']?.toString().trim();
+    final fullName = [firstName, lastName]
+        .whereType<String>()
+        .where((value) => value.isNotEmpty)
+        .join(' ');
+    final displayName =
+        fullName.isNotEmpty
+            ? fullName
+            : data['displayName']?.toString().trim().isNotEmpty == true
+            ? data['displayName'].toString().trim()
+            : data['name']?.toString().trim().isNotEmpty == true
+            ? data['name'].toString().trim()
+            : data['username']?.toString().trim().isNotEmpty == true
+            ? data['username'].toString().trim()
+            : 'Student';
+
+    String resolvedId = fallbackId;
+    for (final field in _studentLookupFields) {
+      final value = data[field]?.toString().trim();
+      if (value != null && value.isNotEmpty) {
+        resolvedId = value;
+        break;
+      }
+    }
+    if (resolvedId.isEmpty) {
+      resolvedId = documentId;
+    }
+
+    final className =
+        data['classAssigned']?.toString().trim().isNotEmpty == true
+            ? data['classAssigned'].toString().trim()
+            : data['class']?.toString().trim().isNotEmpty == true
+            ? data['class'].toString().trim()
+            : _selectedClass;
+    final section =
+        data['section']?.toString().trim().isNotEmpty == true
+            ? data['section'].toString().trim()
+            : data['sectionAssigned']?.toString().trim().isNotEmpty == true
+            ? data['sectionAssigned'].toString().trim()
+            : _selectedSection;
+
+    return _ResolvedStudentInfo(
+      documentId: documentId,
+      studentId: resolvedId,
+      displayName: displayName,
+      classLabel: '$className$section',
+      quiz: _readStudentScore(data, 'quiz'),
+      mid: _readStudentScore(data, 'mid'),
+      assignment: _readStudentScore(data, 'assignment'),
+      finalExam: _readStudentScore(data, 'finalExam'),
+    );
   }
 
   AssessmentKey _buildDefaultAssessmentKey(String assessmentType) {
@@ -802,15 +1136,14 @@ class _ScanFlowScreenState extends State<ScanFlowScreen> {
               ),
             )
             .toList();
-        final aiTotalMarks = aiResult.totalMarks > 0
-            ? aiResult.totalMarks
-            : aiComparisons.fold<double>(
-                0,
-                (sum, item) => sum + item.availableMarks,
-              );
-        final aiAwardedMarks = aiResult.awardedMarks
-            .clamp(0, aiTotalMarks)
-            .toDouble();
+        final aiTotalMarks = aiComparisons.fold<double>(
+          0,
+          (sum, item) => sum + item.availableMarks,
+        );
+        final aiAwardedMarks = aiComparisons.fold<double>(
+          0,
+          (sum, item) => sum + item.awardedMarks,
+        ).clamp(0, aiTotalMarks).toDouble();
         final aiScorePercent = aiTotalMarks == 0
             ? 0.0
             : (aiAwardedMarks / aiTotalMarks) * 100;
@@ -902,24 +1235,49 @@ class _ScanFlowScreenState extends State<ScanFlowScreen> {
       return;
     }
 
-    await ScanLocalStorage.addScanResult(
-      evaluation.toMap(
-        selectedClass: _selectedClass,
-        selectedSection: _selectedSection,
-        assessmentType: _assessmentType,
-        imagePath: _lastProcessedImagePath,
-      )..addAll({
-          'teacherAdjustedScore': _score,
-          'teacherFeedback': _feedbackController.text.trim(),
-        }),
-    );
+    try {
+      await ScanLocalStorage.addScanResult(
+        evaluation.toMap(
+          selectedClass: _selectedClass,
+          selectedSection: _selectedSection,
+          assessmentType: _assessmentType,
+          imagePath: _lastProcessedImagePath,
+        )..addAll({
+            if (_resolvedStudentInfo != null) ...{
+              'studentId': _resolvedStudentInfo!.studentId,
+              'studentName': _resolvedStudentInfo!.displayName,
+              'studentClassLabel': _resolvedStudentInfo!.classLabel,
+            },
+            'teacherAdjustedScore': _score,
+            'teacherFeedback': _feedbackController.text.trim(),
+          }),
+      );
+
+      await _saveStudentScoreToFirestore();
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Failed to save ${_assessmentType.toLowerCase()} mark to Firestore: $error',
+          ),
+        ),
+      );
+      return;
+    }
 
     if (!mounted) {
       return;
     }
 
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Result saved successfully in local Hive storage.')),
+      SnackBar(
+        content: Text(
+          '${_assessmentType} mark saved successfully to Firestore.',
+        ),
+      ),
     );
   }
 
@@ -1088,6 +1446,7 @@ class _ScanFlowScreenState extends State<ScanFlowScreen> {
                     capturedCount: _capturedImagePaths.length,
                     feedbackController: _feedbackController,
                     evaluation: _latestEvaluation,
+                    studentInfo: _resolvedStudentInfo,
                     onScoreChanged: (value) => setState(() => _score = value),
                     onEditScore: () => _showEditScoreSheet(context),
                     onSave: _saveCurrentResult,
@@ -1103,6 +1462,8 @@ class _ScanFlowScreenState extends State<ScanFlowScreen> {
   }
 
   Future<void> _showEditScoreSheet(BuildContext context) async {
+    final double maxScore = _latestEvaluation?.totalMarks ?? 100.0;
+    final double sliderMax = maxScore <= 0 ? 1.0 : maxScore;
     await showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
@@ -1121,13 +1482,13 @@ class _ScanFlowScreenState extends State<ScanFlowScreen> {
                   ),
                   const SizedBox(height: 12),
                   Text(
-                    '${_score.round()} / 100',
+                    '${_score.toStringAsFixed(0)} / ${maxScore.toStringAsFixed(0)}',
                     style: Theme.of(context).textTheme.headlineMedium,
                   ),
                   Slider(
                     min: 0,
-                    max: 100,
-                    value: _score,
+                    max: sliderMax,
+                    value: _score.clamp(0.0, sliderMax).toDouble(),
                     onChanged: (value) {
                       setSheetState(() => _score = value);
                       setState(() => _score = value);
@@ -2124,7 +2485,8 @@ class _ProcessingView extends StatelessWidget {
                       minLines: 8,
                       maxLines: 14,
                       decoration: const InputDecoration(
-                        hintText: '1. Answer\n2. Answer\n3. Answer',
+                        hintText:
+                            'studentId = ""\n1. Answer\n2. Answer\n3. Answer',
                         border: OutlineInputBorder(),
                         alignLabelWithHint: true,
                       ),
@@ -2180,6 +2542,7 @@ class _ReviewResultView extends StatelessWidget {
     required this.capturedCount,
     required this.feedbackController,
     required this.evaluation,
+    required this.studentInfo,
     required this.onScoreChanged,
     required this.onEditScore,
     required this.onSave,
@@ -2191,6 +2554,7 @@ class _ReviewResultView extends StatelessWidget {
   final int capturedCount;
   final TextEditingController feedbackController;
   final ScanEvaluation? evaluation;
+  final _ResolvedStudentInfo? studentInfo;
   final ValueChanged<double> onScoreChanged;
   final VoidCallback onEditScore;
   final VoidCallback onSave;
@@ -2199,6 +2563,10 @@ class _ReviewResultView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final evaluation = this.evaluation;
+    final totalMarks = evaluation?.totalMarks ?? 0;
+    final double scoreMax = totalMarks > 0 ? totalMarks : 100.0;
+    final double sliderMax = scoreMax <= 0 ? 1.0 : scoreMax;
+    final resolvedStudent = studentInfo;
 
     return Card(
       child: Padding(
@@ -2218,24 +2586,28 @@ class _ReviewResultView extends StatelessWidget {
                 color: const Color(0xFFF8FAFC),
                 borderRadius: BorderRadius.circular(22),
               ),
-              child: const Row(
+              child: Row(
                 children: [
-                  CircleAvatar(
+                  const CircleAvatar(
                     radius: 24,
                     backgroundColor: Color(0xFFDBEAFE),
                     child: Icon(Icons.person, color: Color(0xFF1D4ED8)),
                   ),
-                  SizedBox(width: 12),
+                  const SizedBox(width: 12),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
+                        const Text(
                           'Student Info',
                           style: TextStyle(fontWeight: FontWeight.w700),
                         ),
-                        SizedBox(height: 4),
-                        Text('Amina Hassan - Admission No. 2031 - Grade 7A'),
+                        const SizedBox(height: 4),
+                        Text(
+                          resolvedStudent == null
+                              ? 'Student ID not found in OCR preview'
+                              : '${resolvedStudent.displayName} - Student ID ${resolvedStudent.studentId} - ${resolvedStudent.classLabel}',
+                        ),
                       ],
                     ),
                   ),
@@ -2259,15 +2631,15 @@ class _ReviewResultView extends StatelessWidget {
                   ),
                   const SizedBox(height: 10),
                   Text(
-                    '${score.round()} / 100',
+                    '${score.toStringAsFixed(0)} / ${scoreMax.toStringAsFixed(0)}',
                     style: Theme.of(context).textTheme.headlineMedium?.copyWith(
                       color: const Color(0xFF0F766E),
                     ),
                   ),
                   Slider(
                     min: 0,
-                    max: 100,
-                    value: score,
+                    max: sliderMax,
+                    value: score.clamp(0.0, sliderMax).toDouble(),
                     onChanged: onScoreChanged,
                   ),
                 ],

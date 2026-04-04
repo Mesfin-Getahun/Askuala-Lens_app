@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../../navigation/presentation/student_main_shell.dart';
+import '../../shared/domain/student_learning_record.dart';
 
 enum StudentScanStep { capture, processing, explanation }
 

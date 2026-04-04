@@ -40,6 +40,7 @@ class StudentRecord {
       className:
           data['classAssigned']?.toString() ??
           data['class']?.toString() ??
+          data['className']?.toString() ??
           'Unassigned',
       section:
           data['section']?.toString() ??

@@ -55,8 +55,10 @@ class _LoginScreenState extends State<LoginScreen> {
       final destination = switch (user.role) {
         AppUserRole.teacher => MainShell(teacher: user),
         AppUserRole.student => StudentAppHome(
+          studentId: user.id,
           studentName: user.displayName,
           classSection: user.classSection,
+          username: user.username,
         ),
       };
 
