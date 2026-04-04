@@ -2,9 +2,12 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:camera/camera.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 
+import '../../../../auth/data/firestore_login_service.dart';
+import '../data/gemini_scan_service.dart';
 import '../data/scan_local_storage.dart';
 
 enum ScanStep { context, camera, processing, review }
@@ -164,21 +167,27 @@ class ScanComparisonItem {
 class ScanEvaluation {
   const ScanEvaluation({
     required this.sessionId,
+    required this.rawOcrText,
     required this.combinedOcrText,
     required this.comparisons,
     required this.scorePercent,
     required this.awardedMarks,
     required this.totalMarks,
     required this.feedback,
+    required this.usedAi,
+    this.aiExtractedAnswers = const [],
   });
 
   final String sessionId;
+  final String rawOcrText;
   final String combinedOcrText;
   final List<ScanComparisonItem> comparisons;
   final double scorePercent;
   final double awardedMarks;
   final double totalMarks;
   final String feedback;
+  final bool usedAi;
+  final List<Map<String, dynamic>> aiExtractedAnswers;
 
   Map<String, dynamic> toMap({
     required String selectedClass,
@@ -192,11 +201,14 @@ class ScanEvaluation {
       'section': selectedSection,
       'assessmentType': assessmentType,
       'imagePath': imagePath,
+      'rawOcrText': rawOcrText,
       'combinedOcrText': combinedOcrText,
       'scorePercent': scorePercent,
       'awardedMarks': awardedMarks,
       'totalMarks': totalMarks,
       'feedback': feedback,
+      'usedAi': usedAi,
+      'aiExtractedAnswers': aiExtractedAnswers,
       'comparisons': comparisons.map((item) => item.toMap()).toList(),
       'savedAt': DateTime.now().toIso8601String(),
     };
@@ -330,13 +342,16 @@ String _buildFeedback({
 }
 
 class ScanFlowScreen extends StatefulWidget {
-  const ScanFlowScreen({super.key});
+  const ScanFlowScreen({super.key, required this.teacher});
+
+  final AppUser teacher;
 
   @override
   State<ScanFlowScreen> createState() => _ScanFlowScreenState();
 }
 
 class _ScanFlowScreenState extends State<ScanFlowScreen> {
+  final GeminiScanService _geminiScanService = GeminiScanService();
   ScanStep _currentStep = ScanStep.context;
   String _selectedClass = 'Grade 7';
   String _selectedSection = 'A';
@@ -545,14 +560,14 @@ class _ScanFlowScreenState extends State<ScanFlowScreen> {
       }
 
       storedImages = ScanLocalStorage.getCapturedImagesForSession(sessionId);
-      final combinedOcrText = storedImages
+      final rawCombinedOcrText = storedImages
           .map((image) => image['ocrText']?.toString().trim() ?? '')
           .where((text) => text.isNotEmpty)
           .join('\n\n');
 
-      final evaluation = _evaluateScan(
+      final evaluation = await _evaluateScan(
         sessionId: sessionId,
-        combinedOcrText: combinedOcrText,
+        combinedOcrText: rawCombinedOcrText,
       );
 
       if (!mounted) {
@@ -561,7 +576,7 @@ class _ScanFlowScreenState extends State<ScanFlowScreen> {
 
       setState(() {
         _latestEvaluation = evaluation;
-        _combinedExtractedText = combinedOcrText;
+        _combinedExtractedText = evaluation.combinedOcrText;
         _score = evaluation.scorePercent;
         _feedbackController.text = evaluation.feedback;
         _lastProcessedImagePath =
@@ -632,10 +647,84 @@ class _ScanFlowScreenState extends State<ScanFlowScreen> {
     return 'scan_${DateTime.now().millisecondsSinceEpoch}';
   }
 
-  ScanEvaluation _evaluateScan({
+  Future<ScanEvaluation> _evaluateScan({
     required String sessionId,
     required String combinedOcrText,
-  }) {
+  }) async {
+    final answerKey = _assessmentKey.questions.asMap().entries.map((entry) {
+      final question = entry.value.normalized(fallbackNumber: entry.key + 1);
+      return <String, Object?>{
+        'questionNumber': question.resolvedNumber(entry.key + 1),
+        'questionType': question.resolvedType.name,
+        'correctAnswer': question.resolvedAnswer,
+        'marks': question.resolvedMarks,
+      };
+    }).toList();
+
+    try {
+      final aiResult = await _geminiScanService.analyzeScan(
+        assessmentType: _assessmentType,
+        selectedClass: _selectedClass,
+        selectedSection: _selectedSection,
+        rawOcrText: combinedOcrText,
+        answerKey: answerKey,
+      );
+
+      if (aiResult != null && aiResult.comparisons.isNotEmpty) {
+        final aiComparisons = aiResult.comparisons
+            .map(
+              (item) => ScanComparisonItem(
+                questionNumber: item.questionNumber,
+                expectedAnswer: item.expectedAnswer,
+                detectedAnswer: item.detectedAnswer,
+                isCorrect: item.isCorrect,
+                awardedMarks: item.awardedMarks,
+                availableMarks: item.availableMarks,
+              ),
+            )
+            .toList();
+        final aiTotalMarks = aiResult.totalMarks > 0
+            ? aiResult.totalMarks
+            : aiComparisons.fold<double>(
+                0,
+                (sum, item) => sum + item.availableMarks,
+              );
+        final aiAwardedMarks = aiResult.awardedMarks
+            .clamp(0, aiTotalMarks)
+            .toDouble();
+        final aiScorePercent = aiTotalMarks == 0
+            ? 0.0
+            : (aiAwardedMarks / aiTotalMarks) * 100;
+
+        return ScanEvaluation(
+          sessionId: sessionId,
+          rawOcrText: combinedOcrText,
+          combinedOcrText: aiResult.cleanedText,
+          comparisons: aiComparisons,
+          scorePercent: aiScorePercent.clamp(0, 100).toDouble(),
+          awardedMarks: aiAwardedMarks,
+          totalMarks: aiTotalMarks,
+          feedback: aiResult.feedback.isNotEmpty
+              ? aiResult.feedback
+              : _buildFeedback(
+                  scorePercent: aiScorePercent,
+                  comparisons: aiComparisons,
+                ),
+          usedAi: true,
+          aiExtractedAnswers: aiResult.answers
+              .map(
+                (item) => {
+                  'questionNumber': item.questionNumber,
+                  'answer': item.answer,
+                },
+              )
+              .toList(),
+        );
+      }
+    } catch (_) {
+      // Keep local grading available if Gemini is not configured or fails.
+    }
+
     final comparisons = _assessmentKey.questions.asMap().entries.map((entry) {
       final question = entry.value.normalized(fallbackNumber: entry.key + 1);
       final detectedAnswer = _extractAnswerForQuestion(
@@ -671,6 +760,7 @@ class _ScanFlowScreenState extends State<ScanFlowScreen> {
 
     return ScanEvaluation(
       sessionId: sessionId,
+      rawOcrText: combinedOcrText,
       combinedOcrText: combinedOcrText,
       comparisons: comparisons,
       scorePercent: scorePercent.clamp(0, 100).toDouble(),
@@ -680,6 +770,7 @@ class _ScanFlowScreenState extends State<ScanFlowScreen> {
         scorePercent: scorePercent,
         comparisons: comparisons,
       ),
+      usedAi: false,
     );
   }
 
@@ -749,87 +840,140 @@ class _ScanFlowScreenState extends State<ScanFlowScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final assessmentKey = _assessmentKey;
+    final teacherStream = FirebaseFirestore.instance
+        .collection('teachers')
+        .doc(widget.teacher.id)
+        .snapshots();
 
-    return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('Scan Papers', style: theme.textTheme.headlineMedium),
-          const SizedBox(height: 8),
-          Text(
-            'Move from setup to review in one guided workflow.',
-            style: theme.textTheme.bodyMedium,
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: teacherStream,
+      builder: (context, teacherSnapshot) {
+        final theme = Theme.of(context);
+        final assessmentKey = _assessmentKey;
+        final teacherData = teacherSnapshot.data?.data() ?? <String, dynamic>{};
+        final teacherAssignment = _TeacherAssignment.fromFirestore(teacherData);
+        final classOptions = teacherAssignment.classes;
+        final resolvedClass = classOptions.contains(_selectedClass)
+            ? _selectedClass
+            : classOptions.first;
+
+        if (resolvedClass != _selectedClass) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted) {
+              return;
+            }
+            setState(() {
+              _selectedClass = resolvedClass;
+              _selectedSection = teacherAssignment
+                  .sectionsForClass(resolvedClass)
+                  .first;
+            });
+          });
+        }
+
+        final sectionOptions = teacherAssignment.sectionsForClass(resolvedClass);
+        final resolvedSection = sectionOptions.contains(_selectedSection)
+            ? _selectedSection
+            : sectionOptions.first;
+
+        if (resolvedSection != _selectedSection) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted) {
+              return;
+            }
+            setState(() {
+              _selectedSection = resolvedSection;
+            });
+          });
+        }
+
+        return SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Scan Papers', style: theme.textTheme.headlineMedium),
+              const SizedBox(height: 8),
+              Text(
+                'Move from setup to review in one guided workflow.',
+                style: theme.textTheme.bodyMedium,
+              ),
+              const SizedBox(height: 20),
+              _StepProgressHeader(currentStep: _currentStep),
+              const SizedBox(height: 20),
+              AnimatedSwitcher(
+                duration: const Duration(milliseconds: 250),
+                child: switch (_currentStep) {
+                  ScanStep.context => _ContextSelectionView(
+                    key: const ValueKey('context-step'),
+                    selectedClass: resolvedClass,
+                    selectedSection: resolvedSection,
+                    classItems: classOptions,
+                    sectionItems: sectionOptions,
+                    assessmentType: _assessmentType,
+                    onClassChanged: (value) => setState(() {
+                      _selectedClass = value;
+                      _selectedSection =
+                          teacherAssignment.sectionsForClass(value).first;
+                    }),
+                    onSectionChanged: (value) =>
+                        setState(() => _selectedSection = value),
+                    onAssessmentTypeChanged: (value) => setState(() {
+                      _assessmentType = value;
+                      _assessmentKey = _assessmentKey.assessmentType == value
+                          ? assessmentKey
+                          : _sanitizeAssessmentKey(
+                              _buildDefaultAssessmentKey(value),
+                            );
+                    }),
+                    assessmentKey: assessmentKey,
+                    onUpdateKey: _openAnswerKeyEditor,
+                    onStartScanning: _startScanSession,
+                  ),
+                  ScanStep.camera => _CameraScanView(
+                    key: const ValueKey('camera-step'),
+                    selectedClass: resolvedClass,
+                    selectedSection: resolvedSection,
+                    assessmentType: _assessmentType,
+                    batchMode: _batchMode,
+                    flashEnabled: _flashEnabled,
+                    onBack: () => _goToStep(ScanStep.context),
+                    onBatchModeChanged: (value) =>
+                        setState(() => _batchMode = value),
+                    onFlashChanged: (value) =>
+                        setState(() => _flashEnabled = value),
+                    capturedCount: _capturedImagePaths.length,
+                    onCapture: _handlePaperCaptured,
+                    onProcessBatch: _processBatchCapture,
+                  ),
+                  ScanStep.processing => _ProcessingView(
+                    key: const ValueKey('processing-step'),
+                    imagePath: _lastProcessedImagePath,
+                    capturedCount: _capturedImagePaths.length,
+                    isProcessing: _isProcessing,
+                    processingError: _processingError,
+                    extractedText: _combinedExtractedText,
+                    onContinue: () => _goToStep(ScanStep.review),
+                    onRetry: _processBatchCapture,
+                  ),
+                  ScanStep.review => _ReviewResultView(
+                    key: const ValueKey('review-step'),
+                    score: _score,
+                    imagePath: _lastProcessedImagePath,
+                    capturedCount: _capturedImagePaths.length,
+                    feedbackController: _feedbackController,
+                    evaluation: _latestEvaluation,
+                    onScoreChanged: (value) => setState(() => _score = value),
+                    onEditScore: () => _showEditScoreSheet(context),
+                    onSave: _saveCurrentResult,
+                    onNextScan: _startNextScan,
+                  ),
+                },
+              ),
+            ],
           ),
-          const SizedBox(height: 20),
-          _StepProgressHeader(currentStep: _currentStep),
-          const SizedBox(height: 20),
-          AnimatedSwitcher(
-            duration: const Duration(milliseconds: 250),
-            child: switch (_currentStep) {
-              ScanStep.context => _ContextSelectionView(
-                key: const ValueKey('context-step'),
-                selectedClass: _selectedClass,
-                selectedSection: _selectedSection,
-                assessmentType: _assessmentType,
-                onClassChanged: (value) =>
-                    setState(() => _selectedClass = value),
-                onSectionChanged: (value) =>
-                    setState(() => _selectedSection = value),
-                onAssessmentTypeChanged: (value) => setState(() {
-                  _assessmentType = value;
-                  _assessmentKey = _assessmentKey.assessmentType == value
-                      ? assessmentKey
-                      : _sanitizeAssessmentKey(_buildDefaultAssessmentKey(value));
-                }),
-                assessmentKey: assessmentKey,
-                onUpdateKey: _openAnswerKeyEditor,
-                onStartScanning: _startScanSession,
-              ),
-              ScanStep.camera => _CameraScanView(
-                key: const ValueKey('camera-step'),
-                selectedClass: _selectedClass,
-                selectedSection: _selectedSection,
-                assessmentType: _assessmentType,
-                batchMode: _batchMode,
-                flashEnabled: _flashEnabled,
-                onBack: () => _goToStep(ScanStep.context),
-                onBatchModeChanged: (value) =>
-                    setState(() => _batchMode = value),
-                onFlashChanged: (value) =>
-                    setState(() => _flashEnabled = value),
-                capturedCount: _capturedImagePaths.length,
-                onCapture: _handlePaperCaptured,
-                onProcessBatch: _processBatchCapture,
-              ),
-              ScanStep.processing => _ProcessingView(
-                key: const ValueKey('processing-step'),
-                imagePath: _lastProcessedImagePath,
-                capturedCount: _capturedImagePaths.length,
-                isProcessing: _isProcessing,
-                processingError: _processingError,
-                extractedText: _combinedExtractedText,
-                onContinue: () => _goToStep(ScanStep.review),
-                onRetry: _processBatchCapture,
-              ),
-              ScanStep.review => _ReviewResultView(
-                key: const ValueKey('review-step'),
-                score: _score,
-                imagePath: _lastProcessedImagePath,
-                capturedCount: _capturedImagePaths.length,
-                feedbackController: _feedbackController,
-                evaluation: _latestEvaluation,
-                onScoreChanged: (value) => setState(() => _score = value),
-                onEditScore: () => _showEditScoreSheet(context),
-                onSave: _saveCurrentResult,
-                onNextScan: _startNextScan,
-              ),
-            },
-          ),
-        ],
-      ),
+        );
+      },
     );
   }
 
@@ -974,6 +1118,8 @@ class _ContextSelectionView extends StatelessWidget {
     super.key,
     required this.selectedClass,
     required this.selectedSection,
+    required this.classItems,
+    required this.sectionItems,
     required this.assessmentType,
     required this.assessmentKey,
     required this.onClassChanged,
@@ -985,6 +1131,8 @@ class _ContextSelectionView extends StatelessWidget {
 
   final String selectedClass;
   final String selectedSection;
+  final List<String> classItems;
+  final List<String> sectionItems;
   final String assessmentType;
   final AssessmentKey assessmentKey;
   final ValueChanged<String> onClassChanged;
@@ -1012,7 +1160,7 @@ class _ContextSelectionView extends StatelessWidget {
                   child: _DropdownField(
                     label: 'Class',
                     value: selectedClass,
-                    items: const ['Grade 7', 'Grade 8', 'Grade 9', 'Grade 10'],
+                    items: classItems,
                     onChanged: onClassChanged,
                   ),
                 ),
@@ -1021,7 +1169,7 @@ class _ContextSelectionView extends StatelessWidget {
                   child: _DropdownField(
                     label: 'Section',
                     value: selectedSection,
-                    items: const ['A', 'B', 'C'],
+                    items: sectionItems,
                     onChanged: onSectionChanged,
                   ),
                 ),
@@ -1033,18 +1181,58 @@ class _ContextSelectionView extends StatelessWidget {
               style: Theme.of(context).textTheme.titleMedium,
             ),
             const SizedBox(height: 12),
-            Wrap(
-              spacing: 10,
-              runSpacing: 10,
-              children: ['Quiz', 'Mid', 'Final', 'Assignment']
-                  .map(
-                    (type) => ChoiceChip(
-                      label: Text(type),
-                      selected: assessmentType == type,
-                      onSelected: (_) => onAssessmentTypeChanged(type),
+            GridView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: 4,
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 2,
+                mainAxisSpacing: 10,
+                crossAxisSpacing: 10,
+                childAspectRatio: 2.8,
+              ),
+              itemBuilder: (context, index) {
+                const assessmentTypes = [
+                  'Quiz',
+                  'Mid',
+                  'Final',
+                  'Assignment',
+                ];
+                final type = assessmentTypes[index];
+                final isSelected = assessmentType == type;
+
+                return InkWell(
+                  borderRadius: BorderRadius.circular(18),
+                  onTap: () => onAssessmentTypeChanged(type),
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 180),
+                    decoration: BoxDecoration(
+                      color: isSelected
+                          ? const Color(0xFF0F766E).withValues(alpha: 0.12)
+                          : Colors.white,
+                      borderRadius: BorderRadius.circular(18),
+                      border: Border.all(
+                        color: isSelected
+                            ? const Color(0xFF0F766E)
+                            : const Color(0xFFE2E8F0),
+                        width: isSelected ? 1.6 : 1,
+                      ),
                     ),
-                  )
-                  .toList(),
+                    child: Center(
+                      child: Text(
+                        type,
+                        style:
+                            Theme.of(context).textTheme.titleSmall?.copyWith(
+                                  color: isSelected
+                                      ? const Color(0xFF0F766E)
+                                      : const Color(0xFF334155),
+                                  fontWeight: FontWeight.w700,
+                                ),
+                      ),
+                    ),
+                  ),
+                );
+              },
             ),
             const SizedBox(height: 22),
             Container(
@@ -1540,8 +1728,8 @@ class _ProcessingView extends StatelessWidget {
             Text(
               processingError ??
                   (isProcessing
-                      ? 'Reading stored pages from Hive, running local OCR, and comparing against the saved answer key.'
-                      : 'Stored scan text is ready for review and future OCR API handoff.'),
+                      ? 'Reading stored pages from Hive, running OCR, then sending the extracted text to Gemini for cleanup, answer extraction, and grading.'
+                      : 'Processed scan text is ready for review, including Gemini cleanup when available.'),
               style: Theme.of(context).textTheme.bodyMedium,
               textAlign: TextAlign.center,
             ),
@@ -1779,8 +1967,38 @@ class _ReviewResultView extends StatelessWidget {
                   children: [
                     Expanded(
                       child: Text(
-                        'Awarded ${evaluation.awardedMarks.toStringAsFixed(0)} of ${evaluation.totalMarks.toStringAsFixed(0)} marks from stored OCR comparison.',
+                        evaluation.usedAi
+                            ? 'Awarded ${evaluation.awardedMarks.toStringAsFixed(0)} of ${evaluation.totalMarks.toStringAsFixed(0)} marks from Gemini-assisted comparison.'
+                            : 'Awarded ${evaluation.awardedMarks.toStringAsFixed(0)} of ${evaluation.totalMarks.toStringAsFixed(0)} marks from stored OCR comparison.',
                       ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 18),
+            ],
+            if (evaluation != null && evaluation.usedAi) ...[
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF8FAFC),
+                  borderRadius: BorderRadius.circular(22),
+                  border: Border.all(color: const Color(0xFFE2E8F0)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Gemini Cleaned Text',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      evaluation.combinedOcrText.length > 420
+                          ? '${evaluation.combinedOcrText.substring(0, 420)}...'
+                          : evaluation.combinedOcrText,
+                      style: Theme.of(context).textTheme.bodySmall,
                     ),
                   ],
                 ),
@@ -1808,6 +2026,38 @@ class _ReviewResultView extends StatelessWidget {
               const SizedBox(height: 14),
             ],
             if (evaluation != null && evaluation.comparisons.isNotEmpty) ...[
+              if (evaluation.usedAi &&
+                  evaluation.aiExtractedAnswers.isNotEmpty) ...[
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF8FAFC),
+                    borderRadius: BorderRadius.circular(22),
+                    border: Border.all(color: const Color(0xFFE2E8F0)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Gemini Extracted Answers',
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                      const SizedBox(height: 12),
+                      ...evaluation.aiExtractedAnswers.map(
+                        (item) => Padding(
+                          padding: const EdgeInsets.only(bottom: 8),
+                          child: Text(
+                            'Q${item['questionNumber']}: ${item['answer']?.toString().trim().isNotEmpty == true ? item['answer'] : 'Not found'}',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 18),
+              ],
               Container(
                 width: double.infinity,
                 padding: const EdgeInsets.all(16),
@@ -2363,7 +2613,7 @@ class _AnswerKeyEditorSheetV2State extends State<_AnswerKeyEditorSheetV2> {
               ),
               const SizedBox(height: 8),
               Text(
-                '${widget.assessmentType} setup for numbering, question type, description, answers, and marks.',
+                '${widget.assessmentType} setup for numbering, question type, answers, and marks.',
                 style: Theme.of(context).textTheme.bodyMedium,
               ),
               const SizedBox(height: 18),
@@ -2394,11 +2644,6 @@ class _AnswerKeyEditorSheetV2State extends State<_AnswerKeyEditorSheetV2> {
                           type: type,
                         );
                       });
-                    },
-                    onDescriptionChanged: (description) {
-                      _questions[entry.key] = _questions[entry.key].copyWith(
-                        description: description,
-                      );
                     },
                     onAnswerChanged: (answer) {
                       _questions[entry.key] = _questions[entry.key].copyWith(
@@ -2443,14 +2688,12 @@ class _QuestionEditorCardV2 extends StatelessWidget {
   const _QuestionEditorCardV2({
     required this.item,
     required this.onTypeChanged,
-    required this.onDescriptionChanged,
     required this.onAnswerChanged,
     required this.onMarksChanged,
   });
 
   final QuestionKeyItem item;
   final ValueChanged<QuestionType> onTypeChanged;
-  final ValueChanged<String> onDescriptionChanged;
   final ValueChanged<String> onAnswerChanged;
   final ValueChanged<String> onMarksChanged;
 
@@ -2486,16 +2729,6 @@ class _QuestionEditorCardV2 extends StatelessWidget {
             onChanged: (value) {
               if (value != null) onTypeChanged(value);
             },
-          ),
-          const SizedBox(height: 12),
-          TextFormField(
-            initialValue: item.resolvedDescription,
-            decoration: const InputDecoration(
-              labelText: 'Question Description',
-              hintText: 'Describe what this question asks',
-              border: OutlineInputBorder(),
-            ),
-            onChanged: onDescriptionChanged,
           ),
           const SizedBox(height: 12),
           TextFormField(
@@ -2567,6 +2800,99 @@ class _DropdownField extends StatelessWidget {
       },
     );
   }
+}
+
+class _TeacherAssignment {
+  const _TeacherAssignment({
+    required this.classes,
+    required this.sectionsByClass,
+  });
+
+  final List<String> classes;
+  final Map<String, List<String>> sectionsByClass;
+
+  factory _TeacherAssignment.fromFirestore(Map<String, dynamic> data) {
+    final classes = <String>{};
+    final sectionsByClass = <String, List<String>>{};
+
+    final classAssigned = data['classAssigned']?.toString().trim();
+    if (classAssigned != null && classAssigned.isNotEmpty) {
+      classes.add(classAssigned);
+    }
+
+    final classAssignments = (data['classAssignments'] as List? ?? const [])
+        .followedBy(data['classesAssigned'] as List? ?? const [])
+        .followedBy(data['assignedClasses'] as List? ?? const [])
+        .map((value) => value.toString().trim())
+        .where((value) => value.isNotEmpty);
+    classes.addAll(classAssignments);
+
+    final sections = (data['sections'] as List? ?? const [])
+        .map((value) => value.toString().trim())
+        .where((value) => value.isNotEmpty)
+        .toList();
+
+    if (sections.isNotEmpty) {
+      if (classAssigned != null && classAssigned.isNotEmpty) {
+        sectionsByClass[classAssigned] = sections;
+      }
+
+      for (final className in classes) {
+        sectionsByClass.putIfAbsent(className, () => sections);
+      }
+    }
+
+    final rawSectionsByClass = data['sectionsByClass'];
+    if (rawSectionsByClass is Map) {
+      for (final entry in rawSectionsByClass.entries) {
+        final className = entry.key.toString().trim();
+        if (className.isEmpty) {
+          continue;
+        }
+
+        final sectionList = (entry.value as List? ?? const [])
+            .map((value) => value.toString().trim())
+            .where((value) => value.isNotEmpty)
+            .toList();
+        classes.add(className);
+        sectionsByClass[className] = sectionList;
+      }
+    }
+
+    final sortedClasses = classes.toList()..sort();
+    return _TeacherAssignment(
+      classes: sortedClasses.isEmpty ? const ['Grade 7'] : sortedClasses,
+      sectionsByClass: sectionsByClass,
+    );
+  }
+
+  List<String> sectionsForClass(String selectedClass) {
+    final sections = sectionsByClass.entries
+        .firstWhere(
+          (entry) =>
+              _normalizeClassValue(entry.key) ==
+              _normalizeClassValue(selectedClass),
+          orElse: () => const MapEntry('', <String>[]),
+        )
+        .value;
+
+    final sortedSections = [...sections]..sort();
+    return sortedSections.isEmpty ? const ['A'] : sortedSections;
+  }
+}
+
+String _normalizeClassValue(String value) {
+  final trimmed = value.trim().toLowerCase();
+  if (trimmed.isEmpty) {
+    return '';
+  }
+
+  final gradeMatch = RegExp(r'(\d+)').firstMatch(trimmed);
+  if (gradeMatch != null) {
+    return 'grade${gradeMatch.group(1)}';
+  }
+
+  return trimmed.replaceAll(RegExp(r'[^a-z0-9]+'), '');
 }
 
 class _ToggleTile extends StatelessWidget {

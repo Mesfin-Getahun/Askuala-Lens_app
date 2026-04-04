@@ -83,11 +83,12 @@ class _StudentsScreenState extends State<StudentsScreen> {
             final students = allStudents.where((student) {
               final matchesClass =
                   resolvedClass == 'All Classes' ||
-                  student.className.toLowerCase() == resolvedClass.toLowerCase();
+                  _normalizeClassValue(student.className) ==
+                      _normalizeClassValue(resolvedClass);
               final matchesSection =
                   resolvedSection == 'All Sections' ||
-                  student.section.toLowerCase() ==
-                      resolvedSection.toLowerCase();
+                  _normalizeSectionValue(student.section) ==
+                      _normalizeSectionValue(resolvedSection);
               return matchesClass && matchesSection;
             }).map((entry) => entry.record).toList();
 
@@ -256,6 +257,8 @@ class _TeacherAssignment {
     }
 
     final classAssignments = (data['classAssignments'] as List? ?? const [])
+        .followedBy(data['classesAssigned'] as List? ?? const [])
+        .followedBy(data['assignedClasses'] as List? ?? const [])
         .map((value) => value.toString().trim())
         .where((value) => value.isNotEmpty);
     classes.addAll(classAssignments);
@@ -305,7 +308,14 @@ class _TeacherAssignment {
       return ['All Sections', ...allSections];
     }
 
-    final sections = sectionsByClass[selectedClass] ?? const <String>[];
+    final sections = sectionsByClass.entries
+        .firstWhere(
+          (entry) =>
+              _normalizeClassValue(entry.key) ==
+              _normalizeClassValue(selectedClass),
+          orElse: () => const MapEntry('', <String>[]),
+        )
+        .value;
     final sortedSections = [...sections]..sort();
     return ['All Sections', ...sortedSections];
   }
@@ -313,13 +323,15 @@ class _TeacherAssignment {
   bool matchesClassAndSection(String className, String section) {
     if (classes.isNotEmpty &&
         !classes.any(
-          (value) => value.toLowerCase() == className.toLowerCase(),
+          (value) =>
+              _normalizeClassValue(value) == _normalizeClassValue(className),
         )) {
       return false;
     }
 
     final normalizedEntry = sectionsByClass.entries.firstWhere(
-      (entry) => entry.key.toLowerCase() == className.toLowerCase(),
+      (entry) =>
+          _normalizeClassValue(entry.key) == _normalizeClassValue(className),
       orElse: () => const MapEntry('', <String>[]),
     );
     final allowedSections = normalizedEntry.value;
@@ -328,7 +340,8 @@ class _TeacherAssignment {
     }
 
     return allowedSections.any(
-      (value) => value.toLowerCase() == section.toLowerCase(),
+      (value) =>
+          _normalizeSectionValue(value) == _normalizeSectionValue(section),
     );
   }
 }
@@ -379,6 +392,24 @@ class _StudentRosterEntry {
 
     return null;
   }
+}
+
+String _normalizeClassValue(String value) {
+  final trimmed = value.trim().toLowerCase();
+  if (trimmed.isEmpty) {
+    return '';
+  }
+
+  final gradeMatch = RegExp(r'(\d+)').firstMatch(trimmed);
+  if (gradeMatch != null) {
+    return 'grade${gradeMatch.group(1)}';
+  }
+
+  return trimmed.replaceAll(RegExp(r'[^a-z0-9]+'), '');
+}
+
+String _normalizeSectionValue(String value) {
+  return value.trim().toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '');
 }
 
 class _StudentsHeroCard extends StatelessWidget {

@@ -1,11 +1,14 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:syncfusion_flutter_charts/charts.dart';
 
-import '../../students/data/mock_student_records.dart';
+import '../../../../auth/data/firestore_login_service.dart';
 import '../../students/domain/student_record.dart';
 
 class AnalyticsScreen extends StatefulWidget {
-  const AnalyticsScreen({super.key});
+  const AnalyticsScreen({super.key, required this.teacher});
+
+  final AppUser teacher;
 
   @override
   State<AnalyticsScreen> createState() => _AnalyticsScreenState();
@@ -22,232 +25,307 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     _tooltipBehavior = TooltipBehavior(enable: true);
   }
 
-  List<StudentRecord> get _filteredStudents {
-    return mockStudentRecords.where((student) {
-      final matchesClass =
-          _selectedClass == 'All Classes' ||
-          student.className == _selectedClass;
-      final matchesSection =
-          _selectedSection == 'All Sections' ||
-          student.section == _selectedSection;
-      return matchesClass && matchesSection;
-    }).toList();
-  }
-
   @override
   Widget build(BuildContext context) {
-    final students = _filteredStudents;
-    final average = students.isEmpty
-        ? 0
-        : students.map((student) => student.total).reduce((a, b) => a + b) /
-              students.length;
-    final highest = students.isEmpty
-        ? 0
-        : students
-              .map((student) => student.total)
-              .reduce((a, b) => a > b ? a : b);
-    final lowest = students.isEmpty
-        ? 0
-        : students
-              .map((student) => student.total)
-              .reduce((a, b) => a < b ? a : b);
+    final teacherStream = FirebaseFirestore.instance
+        .collection('teachers')
+        .doc(widget.teacher.id)
+        .snapshots();
 
-    final scoreDistribution = _buildScoreDistribution(students);
-    final gradeDistribution = _buildGradeDistribution(students);
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: teacherStream,
+      builder: (context, teacherSnapshot) {
+        final teacherData = teacherSnapshot.data?.data() ?? <String, dynamic>{};
+        final teacherProfile = _TeacherAssignment.fromFirestore(teacherData);
 
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final isNarrow = constraints.maxWidth < 720;
+        final classOptions = teacherProfile.classOptions;
+        final resolvedClass = classOptions.contains(_selectedClass)
+            ? _selectedClass
+            : 'All Classes';
+        if (resolvedClass != _selectedClass) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted) {
+              return;
+            }
+            setState(() {
+              _selectedClass = resolvedClass;
+              _selectedSection = 'All Sections';
+            });
+          });
+        }
 
-        return SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _AnalyticsHeroCard(studentCount: students.length),
-              const SizedBox(height: 20),
-              _AnalyticsFilters(
-                selectedClass: _selectedClass,
-                selectedSection: _selectedSection,
-                onClassChanged: (value) =>
-                    setState(() => _selectedClass = value),
-                onSectionChanged: (value) =>
-                    setState(() => _selectedSection = value),
-              ),
-              const SizedBox(height: 20),
-              if (isNarrow) ...[
-                _MetricCard(
-                  label: 'Average Score',
-                  value: average.toStringAsFixed(1),
-                  accent: const Color(0xFF0F766E),
-                  icon: Icons.show_chart,
-                ),
-                const SizedBox(height: 12),
-                _MetricCard(
-                  label: 'Highest Score',
-                  value: '$highest',
-                  accent: const Color(0xFF1D4ED8),
-                  icon: Icons.keyboard_double_arrow_up,
-                ),
-                const SizedBox(height: 12),
-                _MetricCard(
-                  label: 'Lowest Score',
-                  value: '$lowest',
-                  accent: const Color(0xFFEA580C),
-                  icon: Icons.keyboard_double_arrow_down,
-                ),
-              ] else
-                Row(
-                  children: [
-                    Expanded(
-                      child: _MetricCard(
-                        label: 'Average Score',
-                        value: average.toStringAsFixed(1),
-                        accent: const Color(0xFF0F766E),
-                        icon: Icons.show_chart,
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: _MetricCard(
-                        label: 'Highest Score',
-                        value: '$highest',
-                        accent: const Color(0xFF1D4ED8),
-                        icon: Icons.keyboard_double_arrow_up,
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: _MetricCard(
-                        label: 'Lowest Score',
-                        value: '$lowest',
-                        accent: const Color(0xFFEA580C),
-                        icon: Icons.keyboard_double_arrow_down,
-                      ),
-                    ),
-                  ],
-                ),
-              const SizedBox(height: 20),
-              if (isNarrow) ...[
-                _ChartCard(
-                  title: 'Score Distribution',
-                  child: SfCartesianChart(
-                    tooltipBehavior: _tooltipBehavior,
-                    primaryXAxis: CategoryAxis(),
-                    series: <CartesianSeries<_BarPoint, String>>[
-                      ColumnSeries<_BarPoint, String>(
-                        dataSource: scoreDistribution,
-                        xValueMapper: (_BarPoint point, _) => point.label,
-                        yValueMapper: (_BarPoint point, _) => point.value,
-                        pointColorMapper: (_BarPoint point, _) => point.color,
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                    ],
+        final sectionOptions = teacherProfile.sectionOptionsFor(resolvedClass);
+        final resolvedSection = sectionOptions.contains(_selectedSection)
+            ? _selectedSection
+            : 'All Sections';
+        if (resolvedSection != _selectedSection) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted) {
+              return;
+            }
+            setState(() {
+              _selectedSection = resolvedSection;
+            });
+          });
+        }
+
+        final studentsStream = FirebaseFirestore.instance
+            .collection('students')
+            .snapshots();
+
+        return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+          stream: studentsStream,
+          builder: (context, studentsSnapshot) {
+            final roster = (studentsSnapshot.data?.docs ??
+                    <QueryDocumentSnapshot<Map<String, dynamic>>>[])
+                .map(_StudentRosterEntry.fromDocument)
+                .where(
+                  (entry) => teacherProfile.matchesClassAndSection(
+                    entry.className,
+                    entry.section,
                   ),
-                ),
-                const SizedBox(height: 12),
-                _ChartCard(
-                  title: 'Grade Distribution',
-                  child: SfCircularChart(
-                    tooltipBehavior: _tooltipBehavior,
-                    legend: const Legend(
-                      isVisible: true,
-                      position: LegendPosition.bottom,
-                    ),
-                    series: <CircularSeries<_PiePoint, String>>[
-                      PieSeries<_PiePoint, String>(
-                        dataSource: gradeDistribution,
-                        xValueMapper: (_PiePoint point, _) => point.label,
-                        yValueMapper: (_PiePoint point, _) => point.value,
-                        pointColorMapper: (_PiePoint point, _) => point.color,
-                        dataLabelSettings: const DataLabelSettings(
-                          isVisible: true,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ] else
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Expanded(
-                      child: _ChartCard(
-                        title: 'Score Distribution',
-                        child: SfCartesianChart(
-                          tooltipBehavior: _tooltipBehavior,
-                          primaryXAxis: CategoryAxis(),
-                          series: <CartesianSeries<_BarPoint, String>>[
-                            ColumnSeries<_BarPoint, String>(
-                              dataSource: scoreDistribution,
-                              xValueMapper: (_BarPoint point, _) => point.label,
-                              yValueMapper: (_BarPoint point, _) => point.value,
-                              pointColorMapper: (_BarPoint point, _) =>
-                                  point.color,
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: _ChartCard(
-                        title: 'Grade Distribution',
-                        child: SfCircularChart(
-                          tooltipBehavior: _tooltipBehavior,
-                          legend: const Legend(
-                            isVisible: true,
-                            position: LegendPosition.bottom,
-                          ),
-                          series: <CircularSeries<_PiePoint, String>>[
-                            PieSeries<_PiePoint, String>(
-                              dataSource: gradeDistribution,
-                              xValueMapper: (_PiePoint point, _) => point.label,
-                              yValueMapper: (_PiePoint point, _) => point.value,
-                              pointColorMapper: (_PiePoint point, _) =>
-                                  point.color,
-                              dataLabelSettings: const DataLabelSettings(
-                                isVisible: true,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              const SizedBox(height: 20),
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(20),
+                )
+                .where((entry) {
+                  final matchesClass =
+                      resolvedClass == 'All Classes' ||
+                      _normalizeClassValue(entry.className) ==
+                          _normalizeClassValue(resolvedClass);
+                  final matchesSection =
+                      resolvedSection == 'All Sections' ||
+                      _normalizeSectionValue(entry.section) ==
+                          _normalizeSectionValue(resolvedSection);
+                  return matchesClass && matchesSection;
+                })
+                .toList();
+
+            final students = roster.map((entry) => entry.record).toList();
+            final average = students.isEmpty
+                ? 0
+                : students.map((student) => student.total).reduce((a, b) => a + b) /
+                      students.length;
+            final highest = students.isEmpty
+                ? 0
+                : students
+                      .map((student) => student.total)
+                      .reduce((a, b) => a > b ? a : b);
+            final lowest = students.isEmpty
+                ? 0
+                : students
+                      .map((student) => student.total)
+                      .reduce((a, b) => a < b ? a : b);
+
+            final scoreDistribution = _buildScoreDistribution(students);
+            final gradeDistribution = _buildGradeDistribution(students);
+
+            return LayoutBuilder(
+              builder: (context, constraints) {
+                final isNarrow = constraints.maxWidth < 720;
+
+                return SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        'Insights',
-                        style: Theme.of(context).textTheme.titleLarge,
+                      _AnalyticsHeroCard(studentCount: students.length),
+                      const SizedBox(height: 20),
+                      _AnalyticsFilters(
+                        selectedClass: resolvedClass,
+                        selectedSection: resolvedSection,
+                        classItems: classOptions,
+                        sectionItems: sectionOptions,
+                        onClassChanged: (value) {
+                          setState(() {
+                            _selectedClass = value;
+                            _selectedSection = 'All Sections';
+                          });
+                        },
+                        onSectionChanged: (value) =>
+                            setState(() => _selectedSection = value),
                       ),
-                      const SizedBox(height: 14),
-                      ..._buildInsights(students).map(
-                        (insight) => Padding(
-                          padding: const EdgeInsets.only(bottom: 10),
-                          child: Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Padding(
-                                padding: EdgeInsets.only(top: 3),
-                                child: Icon(
-                                  Icons.auto_awesome,
-                                  size: 18,
-                                  color: Color(0xFF0F766E),
+                      const SizedBox(height: 20),
+                      if (isNarrow) ...[
+                        _MetricCard(
+                          label: 'Average Score',
+                          value: average.toStringAsFixed(1),
+                          accent: const Color(0xFF0F766E),
+                          icon: Icons.show_chart,
+                        ),
+                        const SizedBox(height: 12),
+                        _MetricCard(
+                          label: 'Highest Score',
+                          value: '$highest',
+                          accent: const Color(0xFF1D4ED8),
+                          icon: Icons.keyboard_double_arrow_up,
+                        ),
+                        const SizedBox(height: 12),
+                        _MetricCard(
+                          label: 'Lowest Score',
+                          value: '$lowest',
+                          accent: const Color(0xFFEA580C),
+                          icon: Icons.keyboard_double_arrow_down,
+                        ),
+                      ] else
+                        Row(
+                          children: [
+                            Expanded(
+                              child: _MetricCard(
+                                label: 'Average Score',
+                                value: average.toStringAsFixed(1),
+                                accent: const Color(0xFF0F766E),
+                                icon: Icons.show_chart,
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: _MetricCard(
+                                label: 'Highest Score',
+                                value: '$highest',
+                                accent: const Color(0xFF1D4ED8),
+                                icon: Icons.keyboard_double_arrow_up,
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: _MetricCard(
+                                label: 'Lowest Score',
+                                value: '$lowest',
+                                accent: const Color(0xFFEA580C),
+                                icon: Icons.keyboard_double_arrow_down,
+                              ),
+                            ),
+                          ],
+                        ),
+                      const SizedBox(height: 20),
+                      if (isNarrow) ...[
+                        _ChartCard(
+                          title: 'Score Distribution',
+                          child: SfCartesianChart(
+                            tooltipBehavior: _tooltipBehavior,
+                            primaryXAxis: CategoryAxis(),
+                            series: <CartesianSeries<_BarPoint, String>>[
+                              ColumnSeries<_BarPoint, String>(
+                                dataSource: scoreDistribution,
+                                xValueMapper: (_BarPoint point, _) => point.label,
+                                yValueMapper: (_BarPoint point, _) => point.value,
+                                pointColorMapper: (_BarPoint point, _) => point.color,
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        _ChartCard(
+                          title: 'Grade Distribution',
+                          child: SfCircularChart(
+                            tooltipBehavior: _tooltipBehavior,
+                            legend: const Legend(
+                              isVisible: true,
+                              position: LegendPosition.bottom,
+                            ),
+                            series: <CircularSeries<_PiePoint, String>>[
+                              PieSeries<_PiePoint, String>(
+                                dataSource: gradeDistribution,
+                                xValueMapper: (_PiePoint point, _) => point.label,
+                                yValueMapper: (_PiePoint point, _) => point.value,
+                                pointColorMapper: (_PiePoint point, _) => point.color,
+                                dataLabelSettings: const DataLabelSettings(
+                                  isVisible: true,
                                 ),
                               ),
-                              const SizedBox(width: 10),
-                              Expanded(
-                                child: Text(
-                                  insight,
-                                  style: Theme.of(context).textTheme.bodyMedium,
+                            ],
+                          ),
+                        ),
+                      ] else
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(
+                              child: _ChartCard(
+                                title: 'Score Distribution',
+                                child: SfCartesianChart(
+                                  tooltipBehavior: _tooltipBehavior,
+                                  primaryXAxis: CategoryAxis(),
+                                  series: <CartesianSeries<_BarPoint, String>>[
+                                    ColumnSeries<_BarPoint, String>(
+                                      dataSource: scoreDistribution,
+                                      xValueMapper: (_BarPoint point, _) =>
+                                          point.label,
+                                      yValueMapper: (_BarPoint point, _) =>
+                                          point.value,
+                                      pointColorMapper: (_BarPoint point, _) =>
+                                          point.color,
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: _ChartCard(
+                                title: 'Grade Distribution',
+                                child: SfCircularChart(
+                                  tooltipBehavior: _tooltipBehavior,
+                                  legend: const Legend(
+                                    isVisible: true,
+                                    position: LegendPosition.bottom,
+                                  ),
+                                  series: <CircularSeries<_PiePoint, String>>[
+                                    PieSeries<_PiePoint, String>(
+                                      dataSource: gradeDistribution,
+                                      xValueMapper: (_PiePoint point, _) =>
+                                          point.label,
+                                      yValueMapper: (_PiePoint point, _) =>
+                                          point.value,
+                                      pointColorMapper: (_PiePoint point, _) =>
+                                          point.color,
+                                      dataLabelSettings: const DataLabelSettings(
+                                        isVisible: true,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      const SizedBox(height: 20),
+                      Card(
+                        child: Padding(
+                          padding: const EdgeInsets.all(20),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Insights',
+                                style: Theme.of(context).textTheme.titleLarge,
+                              ),
+                              const SizedBox(height: 14),
+                              ..._buildInsights(students).map(
+                                (insight) => Padding(
+                                  padding: const EdgeInsets.only(bottom: 10),
+                                  child: Row(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      const Padding(
+                                        padding: EdgeInsets.only(top: 3),
+                                        child: Icon(
+                                          Icons.auto_awesome,
+                                          size: 18,
+                                          color: Color(0xFF0F766E),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 10),
+                                      Expanded(
+                                        child: Text(
+                                          insight,
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .bodyMedium,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
                                 ),
                               ),
                             ],
@@ -256,10 +334,10 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                       ),
                     ],
                   ),
-                ),
-              ),
-            ],
-          ),
+                );
+              },
+            );
+          },
         );
       },
     );
@@ -337,29 +415,201 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   List<String> _buildInsights(List<StudentRecord> students) {
     if (students.isEmpty) {
       return const [
-        'No records match the selected filters yet.',
-        'Run a scan for this class and section to generate insights.',
+        'No Firestore student records match the selected filters yet.',
+        'Select another class or section, or add student scores in the students collection.',
       ];
     }
 
-    final weakFinals = students
-        .where((student) => student.finalExam < 35)
-        .length;
+    final weakFinals = students.where((student) => student.finalExam < 35).length;
     final weakQuiz = students.where((student) => student.quiz < 9).length;
     final average =
         students.map((student) => student.total).reduce((a, b) => a + b) /
         students.length;
 
     return [
-      'Most students struggled on Question 3 style items in the final section.',
+      'These analytics are built from live student documents in Firestore for the selected teacher filters.',
       weakQuiz >= students.length / 2
-          ? 'Weak area: fractions and foundational fluency need reinforcement.'
-          : 'Class confidence is stronger in short quizzes than in long-form papers.',
+          ? 'Most students need extra support in quiz performance and foundational fluency.'
+          : 'Quiz performance is steadier than long-form assessment performance in this filtered group.',
       average < 70
-          ? '$weakFinals students fell below 35 in the final section, so revision should focus on exam pacing.'
-          : 'The class average is healthy, with room to push more students into the A band.',
+          ? '$weakFinals students are below 35 in the final component, so revision should focus on exam pacing and reinforcement.'
+          : 'The class average is healthy, with room to move more students into the A band.',
     ];
   }
+}
+
+class _TeacherAssignment {
+  const _TeacherAssignment({
+    required this.classes,
+    required this.sectionsByClass,
+  });
+
+  final List<String> classes;
+  final Map<String, List<String>> sectionsByClass;
+
+  factory _TeacherAssignment.fromFirestore(Map<String, dynamic> data) {
+    final classes = <String>{};
+    final sectionsByClass = <String, List<String>>{};
+
+    final classAssigned = data['classAssigned']?.toString().trim();
+    if (classAssigned != null && classAssigned.isNotEmpty) {
+      classes.add(classAssigned);
+    }
+
+    final classAssignments = (data['classAssignments'] as List? ?? const [])
+        .followedBy(data['classesAssigned'] as List? ?? const [])
+        .followedBy(data['assignedClasses'] as List? ?? const [])
+        .map((value) => value.toString().trim())
+        .where((value) => value.isNotEmpty);
+    classes.addAll(classAssignments);
+
+    final sections = (data['sections'] as List? ?? const [])
+        .map((value) => value.toString().trim())
+        .where((value) => value.isNotEmpty)
+        .toList();
+
+    if (classAssigned != null && classAssigned.isNotEmpty) {
+      sectionsByClass[classAssigned] = sections;
+    }
+
+    final rawSectionsByClass = data['sectionsByClass'];
+    if (rawSectionsByClass is Map) {
+      for (final entry in rawSectionsByClass.entries) {
+        final className = entry.key.toString().trim();
+        if (className.isEmpty) {
+          continue;
+        }
+
+        final sectionList = (entry.value as List? ?? const [])
+            .map((value) => value.toString().trim())
+            .where((value) => value.isNotEmpty)
+            .toList();
+        classes.add(className);
+        sectionsByClass[className] = sectionList;
+      }
+    }
+
+    final sortedClasses = classes.toList()..sort();
+    return _TeacherAssignment(
+      classes: sortedClasses,
+      sectionsByClass: sectionsByClass,
+    );
+  }
+
+  List<String> get classOptions => ['All Classes', ...classes];
+
+  List<String> sectionOptionsFor(String selectedClass) {
+    if (selectedClass == 'All Classes') {
+      final allSections = sectionsByClass.values
+          .expand((sections) => sections)
+          .toSet()
+          .toList()
+        ..sort();
+      return ['All Sections', ...allSections];
+    }
+
+    final sections = sectionsByClass.entries
+        .firstWhere(
+          (entry) =>
+              _normalizeClassValue(entry.key) ==
+              _normalizeClassValue(selectedClass),
+          orElse: () => const MapEntry('', <String>[]),
+        )
+        .value;
+    final sortedSections = [...sections]..sort();
+    return ['All Sections', ...sortedSections];
+  }
+
+  bool matchesClassAndSection(String className, String section) {
+    if (classes.isNotEmpty &&
+        !classes.any(
+          (value) =>
+              _normalizeClassValue(value) == _normalizeClassValue(className),
+        )) {
+      return false;
+    }
+
+    final normalizedEntry = sectionsByClass.entries.firstWhere(
+      (entry) =>
+          _normalizeClassValue(entry.key) == _normalizeClassValue(className),
+      orElse: () => const MapEntry('', <String>[]),
+    );
+    final allowedSections = normalizedEntry.value;
+    if (allowedSections.isEmpty) {
+      return true;
+    }
+
+    return allowedSections.any(
+      (value) =>
+          _normalizeSectionValue(value) == _normalizeSectionValue(section),
+    );
+  }
+}
+
+class _StudentRosterEntry {
+  const _StudentRosterEntry({
+    required this.record,
+    required this.className,
+    required this.section,
+  });
+
+  final StudentRecord record;
+  final String className;
+  final String section;
+
+  factory _StudentRosterEntry.fromDocument(
+    QueryDocumentSnapshot<Map<String, dynamic>> doc,
+  ) {
+    final data = doc.data();
+    return _StudentRosterEntry(
+      record: StudentRecord.fromFirestore(data),
+      className: _readFirstString(data, const [
+            'classAssigned',
+            'class',
+            'className',
+            'grade',
+          ]) ??
+          'Unassigned',
+      section: _readFirstString(data, const [
+            'section',
+            'sectionAssigned',
+            'sectionName',
+          ]) ??
+          'Unknown',
+    );
+  }
+
+  static String? _readFirstString(
+    Map<String, dynamic> data,
+    List<String> keys,
+  ) {
+    for (final key in keys) {
+      final value = data[key]?.toString().trim();
+      if (value != null && value.isNotEmpty) {
+        return value;
+      }
+    }
+
+    return null;
+  }
+}
+
+String _normalizeClassValue(String value) {
+  final trimmed = value.trim().toLowerCase();
+  if (trimmed.isEmpty) {
+    return '';
+  }
+
+  final gradeMatch = RegExp(r'(\d+)').firstMatch(trimmed);
+  if (gradeMatch != null) {
+    return 'grade${gradeMatch.group(1)}';
+  }
+
+  return trimmed.replaceAll(RegExp(r'[^a-z0-9]+'), '');
+}
+
+String _normalizeSectionValue(String value) {
+  return value.trim().toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '');
 }
 
 class _AnalyticsHeroCard extends StatelessWidget {
@@ -391,7 +641,7 @@ class _AnalyticsHeroCard extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           Text(
-            'Spot trends fast with score cards, distributions, and teaching insights.',
+            'Spot trends fast with live Firestore score cards, distributions, and teaching insights.',
             style: Theme.of(context).textTheme.bodyMedium?.copyWith(
               color: Colors.white.withValues(alpha: 0.88),
             ),
@@ -420,12 +670,16 @@ class _AnalyticsFilters extends StatelessWidget {
   const _AnalyticsFilters({
     required this.selectedClass,
     required this.selectedSection,
+    required this.classItems,
+    required this.sectionItems,
     required this.onClassChanged,
     required this.onSectionChanged,
   });
 
   final String selectedClass;
   final String selectedSection;
+  final List<String> classItems;
+  final List<String> sectionItems;
   final ValueChanged<String> onClassChanged;
   final ValueChanged<String> onSectionChanged;
 
@@ -440,7 +694,7 @@ class _AnalyticsFilters extends StatelessWidget {
               child: _FilterDropdown(
                 label: 'Class',
                 value: selectedClass,
-                items: const ['All Classes', 'Grade 7', 'Grade 8'],
+                items: classItems,
                 onChanged: onClassChanged,
               ),
             ),
@@ -449,7 +703,7 @@ class _AnalyticsFilters extends StatelessWidget {
               child: _FilterDropdown(
                 label: 'Section',
                 value: selectedSection,
-                items: const ['All Sections', 'A', 'B', 'C'],
+                items: sectionItems,
                 onChanged: onSectionChanged,
               ),
             ),

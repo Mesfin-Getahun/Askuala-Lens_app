@@ -33,11 +33,12 @@ class _MainShellState extends State<MainShell> {
         onOpenScan: () => _selectTab(1),
         onOpenStudents: () => _selectTab(2),
         onOpenAnalytics: () => _selectTab(3),
+        onOpenAttendance: () => _selectTab(2),
       ),
-      const ScanFlowScreen(),
+      ScanFlowScreen(teacher: widget.teacher),
       StudentsScreen(teacher: widget.teacher),
-      const AnalyticsScreen(),
-      const ProfileScreen(),
+      AnalyticsScreen(teacher: widget.teacher),
+      ProfileScreen(teacher: widget.teacher),
     ];
 
     return Scaffold(

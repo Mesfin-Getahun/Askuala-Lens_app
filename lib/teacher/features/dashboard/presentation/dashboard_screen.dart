@@ -10,12 +10,14 @@ class DashboardScreen extends StatelessWidget {
     required this.onOpenScan,
     required this.onOpenStudents,
     required this.onOpenAnalytics,
+    required this.onOpenAttendance,
   });
 
   final AppUser teacher;
   final VoidCallback onOpenScan;
   final VoidCallback onOpenStudents;
   final VoidCallback onOpenAnalytics;
+  final VoidCallback onOpenAttendance;
 
   @override
   Widget build(BuildContext context) {
@@ -69,6 +71,7 @@ class DashboardScreen extends StatelessWidget {
               onOpenScan: onOpenScan,
               onOpenStudents: onOpenStudents,
               onOpenAnalytics: onOpenAnalytics,
+              onOpenAttendance: onOpenAttendance,
             );
           },
         );
@@ -85,6 +88,7 @@ class _DashboardContent extends StatelessWidget {
     required this.onOpenScan,
     required this.onOpenStudents,
     required this.onOpenAnalytics,
+    required this.onOpenAttendance,
   });
 
   final _TeacherProfile teacherProfile;
@@ -93,6 +97,7 @@ class _DashboardContent extends StatelessWidget {
   final VoidCallback onOpenScan;
   final VoidCallback onOpenStudents;
   final VoidCallback onOpenAnalytics;
+  final VoidCallback onOpenAttendance;
 
   @override
   Widget build(BuildContext context) {
@@ -172,36 +177,41 @@ class _DashboardContent extends StatelessWidget {
           const SizedBox(height: 24),
           Text('Quick Actions', style: theme.textTheme.titleLarge),
           const SizedBox(height: 14),
-          Row(
+          GridView.count(
+            crossAxisCount: 2,
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            mainAxisSpacing: 12,
+            crossAxisSpacing: 12,
+            childAspectRatio: 1.15,
             children: [
-              Expanded(
-                child: _QuickActionCard(
-                  title: 'Scan Papers',
-                  subtitle: 'Start a grading session',
-                  icon: Icons.document_scanner,
-                  accent: const Color(0xFF0F766E),
-                  onTap: onOpenScan,
-                ),
+              _QuickActionCard(
+                title: 'Scan Papers',
+                subtitle: 'Start a grading session',
+                icon: Icons.document_scanner,
+                accent: const Color(0xFF0F766E),
+                onTap: onOpenScan,
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _QuickActionCard(
-                  title: 'View Students',
-                  subtitle: 'Open class roster',
-                  icon: Icons.groups_2,
-                  accent: const Color(0xFF1D4ED8),
-                  onTap: onOpenStudents,
-                ),
+              _QuickActionCard(
+                title: 'View Students',
+                subtitle: 'Open class roster',
+                icon: Icons.groups_2,
+                accent: const Color(0xFF1D4ED8),
+                onTap: onOpenStudents,
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _QuickActionCard(
-                  title: 'Analytics',
-                  subtitle: 'Check trends',
-                  icon: Icons.insights,
-                  accent: const Color(0xFFEA580C),
-                  onTap: onOpenAnalytics,
-                ),
+              _QuickActionCard(
+                title: 'Analytics',
+                subtitle: 'Check trends',
+                icon: Icons.insights,
+                accent: const Color(0xFFEA580C),
+                onTap: onOpenAnalytics,
+              ),
+              _QuickActionCard(
+                title: 'Attendance',
+                subtitle: 'Track class presence',
+                icon: Icons.fact_check_outlined,
+                accent: const Color(0xFF7C3AED),
+                onTap: onOpenAttendance,
               ),
             ],
           ),
